@@ -67,6 +67,7 @@ def build_bot() -> tuple[commands.Bot, str]:
                 f"- `{prefix}chainstop` hoặc `/chainstop` - Dừng trò chơi\n"
                 f"- `{prefix}chainstatus` hoặc `/chainstatus` - Xem trạng thái trò chơi\n"
                 f"- `{prefix}goiy` hoặc `/chainhint` - Gợi ý từ tiếp theo (5 lần/ngày, `/chainhint` chỉ mình bạn thấy)\n"
+                f"- `{prefix}boqua` hoặc `/chainskip` - Bỏ phiếu bỏ qua từ khó, cần 2 người (mở lượt mới)\n"
                 f"- `{prefix}hoso [người]` hoặc `/chainme` - Xem hồ sơ nối từ\n"
                 f"- `{prefix}bxh` hoặc `/chainrank` - Bảng xếp hạng top 20\n"
                 f"- `{prefix}kiemtra <từ>` hoặc `/chaincheck` - Kiểm tra từ có trong từ điển\n"
@@ -98,17 +99,18 @@ def build_bot() -> tuple[commands.Bot, str]:
             "- `/ping` - Check if the bot is alive\n"
             "- `/help` - Show this help message\n\n"
             "### **Word-chain Game**\n"
-            f"- `{prefix}chainstart [en|vi]` or `/chainstart` - Start a new game in this channel\n"
-            f"- `{prefix}chainstop` or `/chainstop` - Stop the current game in this channel\n"
-            f"- `{prefix}chainstatus` or `/chainstatus` - Show game status in this channel\n"
+            f"- `{prefix}chainstart [en|vi]` or `/chainstart` - Start a new game\n"
+            f"- `{prefix}chainstop` or `/chainstop` - Stop the current game\n"
+            f"- `{prefix}chainstatus` or `/chainstatus` - Show game status\n"
             f"- `{prefix}chainhint` or `/chainhint` - Hint for the next word (Vietnamese games, 5 per day)\n"
+            f"- `{prefix}chainskip` or `/chainskip` - Vote to skip a stuck word, 2 votes start a new round\n"
             f"- `{prefix}chainme [member]` or `/chainme` - Show a word-chain profile\n"
             f"- `{prefix}chainrank` or `/chainrank` - Top 20 leaderboard\n"
             f"- `{prefix}chaincheck <word>` or `/chaincheck` - Check a word against the dictionary\n"
             f"- `{prefix}chainadd <word>` / `{prefix}chainremove <word>` - Edit the Vietnamese dictionary (admin)\n\n"
             "### **How To Play (English)**\n"
             f"1. Run `{prefix}chainstart [en|vi]` or `/chainstart`\n"
-            "2. Bot gives a random starter word from the dictionary in the selected language\n"
+            "2. Bot gives a random starter word\n"
             "3. Send a phrase that starts with the last word of the previous phrase\n"
             "4. Example: bot says `king` -> player says `king maker` -> next phrase must start with `maker`\n\n"
             "### **How To Play (Vietnamese)**\n"
@@ -116,8 +118,8 @@ def build_bot() -> tuple[commands.Bot, str]:
             "- Whoever plays a word that **nobody can continue** wins 🏆 and a new round starts\n\n"
             "### **Rules**\n"
             "- Your first word must match the expected start word\n"
-            "- Words are validated against the current game language dictionary and can't be reused\n"
-            "- Cooldown: each user must wait 5 seconds between accepted answers\n"
+            "- Words must be in the dictionary and can't be reused\n"
+            "- Cooldown: 5 seconds between accepted answers per user\n"
             "- Only one word-chain game can run at a time\n"
             "- The bot reacts ✅ for correct, ❌ for wrong, ⏳ while you're on cooldown\n\n"
             "-# Vietnamese dictionary: Hồ Ngọc Đức (vietnamese-wordlist) · dictionary data by @minhqnd, "
@@ -278,6 +280,27 @@ def build_bot() -> tuple[commands.Bot, str]:
         _, response = word_chain.give_hint(interaction.channel.id, interaction.user.id)
         # Only the player who asked sees the hint.
         await interaction.response.send_message(response, ephemeral=True)
+
+    @bot.command(name="chainskip", aliases=["boqua", "skip"])
+    async def chain_skip(ctx: commands.Context) -> None:
+        _, response = word_chain.vote_skip(ctx.channel.id, ctx.author.id, ctx.author.display_name)
+        await ctx.send(response)
+
+    @bot.tree.command(name="chainskip", description="Vote to skip the current word and start a new round")
+    async def slash_chain_skip(interaction: discord.Interaction) -> None:
+        if interaction.channel is None:
+            await interaction.response.send_message(
+                tr(
+                    "This command must be used in a channel.",
+                    "Lệnh này chỉ có thể dùng trong kênh.",
+                )
+            )
+            return
+
+        _, response = word_chain.vote_skip(
+            interaction.channel.id, interaction.user.id, interaction.user.display_name
+        )
+        await interaction.response.send_message(response)
 
     @bot.command(name="chainme", aliases=["chainprofile", "hoso"])
     async def chain_me(ctx: commands.Context, member: discord.Member | None = None) -> None:

@@ -115,6 +115,7 @@ class WordChainState:
 class WordChainGameManager:
     COOLDOWN_SECONDS = 5.0
     HINTS_PER_DAY = 5
+    SKIP_VOTES_NEEDED = 2
     _STARTER_WORD_POOL_SIZE = 5000
     _MEANINGFUL_WORD_MIN_ZIPF = 2.5
     # Each syllable of a Vietnamese starter word must be at least this common.
@@ -136,6 +137,7 @@ class WordChainGameManager:
         self._ui_language = normalized_ui or self._default_language
         self._starter_word_cache: dict[str, list[str]] = {}
         self._hints_used: dict[tuple[int, str], int] = {}  # used only without a store
+        self._skip_votes: set[int] = set()  # players voting to skip the current word
         self._store = store
         self._vi_dictionary = (
             vi_dictionary
@@ -374,6 +376,7 @@ class WordChainGameManager:
         self._active_channel_id = channel_id
         self._active_game = game
         self._last_answer_at.clear()
+        self._skip_votes.clear()
         self._save()
         return True, self._round_intro(
             game, self._tr("✅ **Word-chain game started**", "✅ **Trò chơi nối từ đã bắt đầu**")
@@ -408,6 +411,7 @@ class WordChainGameManager:
         self._active_channel_id = None
         self._active_game = None
         self._last_answer_at.clear()
+        self._skip_votes.clear()
         self._save()
         return True, self._tr("✅ **Word-chain game stopped**\n", "✅ **Đã dừng trò chơi nối từ**\n") + summary
 
@@ -502,6 +506,60 @@ class WordChainGameManager:
             f"> Lượt gợi ý còn lại hôm nay: **{remaining}/{self.HINTS_PER_DAY}**",
         )
 
+    # ---------- vote skip ----------
+    def vote_skip(self, channel_id: int, user_id: int, user_name: str) -> tuple[bool, str]:
+        """Vote to skip the current word. Enough votes reveal an answer and start a new round."""
+        game = self._active_game
+        if game is None or self._active_channel_id != channel_id:
+            return False, self._tr(
+                "❌ **No active word-chain game in this channel**",
+                "❌ **Không có trò chơi nối từ nào đang hoạt động trong kênh này**",
+            )
+
+        needed = self.SKIP_VOTES_NEEDED
+        if user_id in self._skip_votes:
+            return False, self._tr(
+                f"ℹ️ **You already voted to skip** ({len(self._skip_votes)}/{needed})",
+                f"ℹ️ **Bạn đã bỏ phiếu bỏ qua rồi** ({len(self._skip_votes)}/{needed})",
+            )
+
+        self._skip_votes.add(user_id)
+        votes = len(self._skip_votes)
+        if votes < needed:
+            missing = needed - votes
+            return True, self._tr(
+                f"🗳️ **{user_name} voted to skip** ({votes}/{needed})\n"
+                f"> **{missing}** more player(s) must vote to skip `{game.expected_start_word}`.",
+                f"🗳️ **{user_name} muốn bỏ qua** ({votes}/{needed})\n"
+                f"> Cần thêm **{missing}** người bỏ phiếu để bỏ qua `{game.expected_start_word}`.",
+            )
+
+        skip_text = self._tr(
+            f"⏭️ **Skipped!** Nobody could continue `{game.expected_start_word}`.",
+            f"⏭️ **Đã bỏ qua!** Không ai nối được `{game.expected_start_word}`.",
+        )
+        if game.language == "vi":
+            answer = self._vi_example_answer(game)
+            if answer:
+                skip_text += self._tr(
+                    f"\n> Could have continued with: `{answer}`",
+                    f"\n> Có thể nối bằng: `{answer}`",
+                )
+
+        new_game = self._new_state(game.language)
+        self._skip_votes.clear()
+        self._last_answer_at.clear()
+        if new_game is None:
+            self._active_channel_id = None
+            self._active_game = None
+            self._save()
+            return True, skip_text
+        self._active_game = new_game
+        self._save()
+        return True, skip_text + "\n\n" + self._round_intro(
+            new_game, self._tr("🎮 **New round!**", "🎮 **Lượt chơi mới!**")
+        )
+
     # ---------- turns ----------
     def _check_cooldown(self, key: tuple[int, int], user_name: str, now: float) -> PhraseResult | None:
         last_answer_at = self._last_answer_at.get(key)
@@ -548,6 +606,7 @@ class WordChainGameManager:
         game.last_player_id = user_id
         game.turns += 1
         self._last_answer_at[key] = now
+        self._skip_votes.clear()  # the chain moved on, so earlier skip votes no longer apply
         self._bump(user_id, "correct")
 
     def handle_player_phrase(
@@ -651,6 +710,7 @@ class WordChainGameManager:
 
         self._active_game = new_game
         self._last_answer_at.clear()
+        self._skip_votes.clear()
         return PhraseResult(
             PhraseStatus.WIN,
             win_text + "\n\n" + self._round_intro(new_game, self._tr("🎮 **New round!**", "🎮 **Lượt chơi mới!**")),
