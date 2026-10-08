@@ -82,6 +82,12 @@ class PhraseStatus:
     USED = "used"                # already used in this game
 
 
+class SkipStatus:
+    ERROR = "error"      # no game here, or already voted
+    VOTED = "voted"      # vote counted, more votes needed
+    SKIPPED = "skipped"  # enough votes: word skipped (a new round starts if possible)
+
+
 @dataclass
 class PhraseResult:
     status: str
@@ -507,18 +513,21 @@ class WordChainGameManager:
         )
 
     # ---------- vote skip ----------
-    def vote_skip(self, channel_id: int, user_id: int, user_name: str) -> tuple[bool, str]:
-        """Vote to skip the current word. Enough votes reveal an answer and start a new round."""
+    def vote_skip(self, channel_id: int, user_id: int, user_name: str) -> tuple[str, str]:
+        """Vote to skip the current word. Enough votes reveal an answer and start a new round.
+
+        Returns (SkipStatus, message).
+        """
         game = self._active_game
         if game is None or self._active_channel_id != channel_id:
-            return False, self._tr(
+            return SkipStatus.ERROR, self._tr(
                 "❌ **No active word-chain game in this channel**",
                 "❌ **Không có trò chơi nối từ nào đang hoạt động trong kênh này**",
             )
 
         needed = self.SKIP_VOTES_NEEDED
         if user_id in self._skip_votes:
-            return False, self._tr(
+            return SkipStatus.ERROR, self._tr(
                 f"ℹ️ **You already voted to skip** ({len(self._skip_votes)}/{needed})",
                 f"ℹ️ **Bạn đã bỏ phiếu bỏ qua rồi** ({len(self._skip_votes)}/{needed})",
             )
@@ -527,7 +536,7 @@ class WordChainGameManager:
         votes = len(self._skip_votes)
         if votes < needed:
             missing = needed - votes
-            return True, self._tr(
+            return SkipStatus.VOTED, self._tr(
                 f"🗳️ **{user_name} voted to skip** ({votes}/{needed})\n"
                 f"> **{missing}** more player(s) must vote to skip `{game.expected_start_word}`.",
                 f"🗳️ **{user_name} muốn bỏ qua** ({votes}/{needed})\n"
@@ -553,10 +562,10 @@ class WordChainGameManager:
             self._active_channel_id = None
             self._active_game = None
             self._save()
-            return True, skip_text
+            return SkipStatus.SKIPPED, skip_text
         self._active_game = new_game
         self._save()
-        return True, skip_text + "\n\n" + self._round_intro(
+        return SkipStatus.SKIPPED, skip_text + "\n\n" + self._round_intro(
             new_game, self._tr("🎮 **New round!**", "🎮 **Lượt chơi mới!**")
         )
 

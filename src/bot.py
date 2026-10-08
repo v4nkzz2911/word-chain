@@ -8,7 +8,7 @@ from discord.ext import commands
 
 from config import load_config
 from storage import GameStore
-from word_chain import PhraseStatus, WordChainGameManager
+from word_chain import PhraseStatus, SkipStatus, WordChainGameManager
 
 
 logging.basicConfig(
@@ -51,6 +51,44 @@ def build_bot() -> tuple[commands.Bot, str]:
         store=GameStore(DATA_DIR / "word_chain.db"),
     )
 
+    class SkipView(discord.ui.View):
+        """⏭️ button under game messages: clicking it votes to skip, like the skip command.
+
+        timeout=None and a fixed custom_id keep the button working after a bot restart.
+        """
+
+        def __init__(self) -> None:
+            super().__init__(timeout=None)
+            self.skip_button.label = tr("Skip", "Bỏ qua")
+
+        @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary, custom_id="wordchain:skip")
+        async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+            await send_skip_vote(interaction)
+
+    def skip_button_kwargs(channel_id: int) -> dict:
+        """Attach the skip button only while a game is running in the channel."""
+        return {"view": SkipView()} if word_chain.has_game(channel_id) else {}
+
+    async def send_skip_vote(interaction: discord.Interaction) -> None:
+        if interaction.channel is None:
+            await interaction.response.send_message(
+                tr(
+                    "This command must be used in a channel.",
+                    "Lệnh này chỉ có thể dùng trong kênh.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        status, response = word_chain.vote_skip(
+            interaction.channel.id, interaction.user.id, interaction.user.display_name
+        )
+        if status == SkipStatus.ERROR:
+            # "Already voted" / "no game" only concerns the player who clicked.
+            await interaction.response.send_message(response, ephemeral=True)
+            return
+        await interaction.response.send_message(response, **skip_button_kwargs(interaction.channel.id))
+
     def build_help_text() -> str:
         prefix = config.command_prefix
         if config.bot_language == "vi":
@@ -67,7 +105,7 @@ def build_bot() -> tuple[commands.Bot, str]:
                 f"- `{prefix}chainstop` hoặc `/chainstop` - Dừng trò chơi\n"
                 f"- `{prefix}chainstatus` hoặc `/chainstatus` - Xem trạng thái trò chơi\n"
                 f"- `{prefix}goiy` hoặc `/chainhint` - Gợi ý từ tiếp theo (5 lần/ngày, `/chainhint` chỉ mình bạn thấy)\n"
-                f"- `{prefix}boqua` hoặc `/chainskip` - Bỏ phiếu bỏ qua từ khó, cần 2 người (mở lượt mới)\n"
+                f"- Nút ⏭️ **Bỏ qua**, `{prefix}boqua` hoặc `/chainskip` - Bỏ phiếu bỏ qua từ khó, cần 2 người\n"
                 f"- `{prefix}hoso [người]` hoặc `/chainme` - Xem hồ sơ nối từ\n"
                 f"- `{prefix}bxh` hoặc `/chainrank` - Bảng xếp hạng top 20\n"
                 f"- `{prefix}kiemtra <từ>` hoặc `/chaincheck` - Kiểm tra từ có trong từ điển\n"
@@ -103,7 +141,7 @@ def build_bot() -> tuple[commands.Bot, str]:
             f"- `{prefix}chainstop` or `/chainstop` - Stop the current game\n"
             f"- `{prefix}chainstatus` or `/chainstatus` - Show game status\n"
             f"- `{prefix}chainhint` or `/chainhint` - Hint for the next word (Vietnamese games, 5 per day)\n"
-            f"- `{prefix}chainskip` or `/chainskip` - Vote to skip a stuck word, 2 votes start a new round\n"
+            f"- ⏭️ **Skip** button, `{prefix}chainskip` or `/chainskip` - Vote to skip a stuck word (2 votes)\n"
             f"- `{prefix}chainme [member]` or `/chainme` - Show a word-chain profile\n"
             f"- `{prefix}chainrank` or `/chainrank` - Top 20 leaderboard\n"
             f"- `{prefix}chaincheck <word>` or `/chaincheck` - Check a word against the dictionary\n"
@@ -142,6 +180,9 @@ def build_bot() -> tuple[commands.Bot, str]:
             )
         except Exception:
             logger.exception("Failed to load the Vietnamese dictionary; Vietnamese games are unavailable")
+
+        # Make skip buttons on messages sent before a restart clickable again.
+        bot.add_view(SkipView())
 
         if config.guild_id:
             guild = discord.Object(id=config.guild_id)
@@ -195,7 +236,7 @@ def build_bot() -> tuple[commands.Bot, str]:
     @bot.command(name="chainstart")
     async def chain_start(ctx: commands.Context, language: str | None = None) -> None:
         _, response = word_chain.start_game(ctx.channel.id, language)
-        await ctx.send(response)
+        await ctx.send(response, **skip_button_kwargs(ctx.channel.id))
 
     @bot.tree.command(name="chainstart", description="Start a word-chain game in this channel")
     @app_commands.describe(language="Optional language: en (English) or vi (Vietnamese)")
@@ -220,7 +261,7 @@ def build_bot() -> tuple[commands.Bot, str]:
 
         selected_language = language.value if language is not None else None
         _, response = word_chain.start_game(interaction.channel.id, selected_language)
-        await interaction.response.send_message(response)
+        await interaction.response.send_message(response, **skip_button_kwargs(interaction.channel.id))
 
     @bot.command(name="chainstop")
     async def chain_stop(ctx: commands.Context) -> None:
@@ -244,7 +285,7 @@ def build_bot() -> tuple[commands.Bot, str]:
     @bot.command(name="chainstatus")
     async def chain_status(ctx: commands.Context) -> None:
         _, response = word_chain.game_status(ctx.channel.id)
-        await ctx.send(response)
+        await ctx.send(response, **skip_button_kwargs(ctx.channel.id))
 
     @bot.tree.command(name="chainstatus", description="Show word-chain status in this channel")
     async def slash_chain_status(interaction: discord.Interaction) -> None:
@@ -258,7 +299,7 @@ def build_bot() -> tuple[commands.Bot, str]:
             return
 
         _, response = word_chain.game_status(interaction.channel.id)
-        await interaction.response.send_message(response)
+        await interaction.response.send_message(response, **skip_button_kwargs(interaction.channel.id))
 
     @bot.command(name="chainhint", aliases=["goiy", "hint"])
     async def chain_hint(ctx: commands.Context) -> None:
@@ -284,23 +325,11 @@ def build_bot() -> tuple[commands.Bot, str]:
     @bot.command(name="chainskip", aliases=["boqua", "skip"])
     async def chain_skip(ctx: commands.Context) -> None:
         _, response = word_chain.vote_skip(ctx.channel.id, ctx.author.id, ctx.author.display_name)
-        await ctx.send(response)
+        await ctx.send(response, **skip_button_kwargs(ctx.channel.id))
 
     @bot.tree.command(name="chainskip", description="Vote to skip the current word and start a new round")
     async def slash_chain_skip(interaction: discord.Interaction) -> None:
-        if interaction.channel is None:
-            await interaction.response.send_message(
-                tr(
-                    "This command must be used in a channel.",
-                    "Lệnh này chỉ có thể dùng trong kênh.",
-                )
-            )
-            return
-
-        _, response = word_chain.vote_skip(
-            interaction.channel.id, interaction.user.id, interaction.user.display_name
-        )
-        await interaction.response.send_message(response)
+        await send_skip_vote(interaction)
 
     @bot.command(name="chainme", aliases=["chainprofile", "hoso"])
     async def chain_me(ctx: commands.Context, member: discord.Member | None = None) -> None:
@@ -385,7 +414,7 @@ def build_bot() -> tuple[commands.Bot, str]:
 
         if result.status == PhraseStatus.WIN:
             await safe_react(message, "✅")
-            await message.channel.send(result.message)
+            await message.channel.send(result.message, **skip_button_kwargs(message.channel.id))
             return
 
         await safe_react(message, "⏳" if result.status == PhraseStatus.COOLDOWN else "❌")

@@ -43,7 +43,8 @@ python src/bot.py
 - Show word-chain status: `/chainstatus` or `<prefix>chainstatus`
 - Hint for the next word (Vietnamese games, 5 per person per day, resets at midnight Vietnam time):
   `/chainhint` (only you see it) or `<prefix>chainhint` (alias `<prefix>goiy`, `<prefix>hint`)
-- Vote to skip a word nobody can continue: `/chainskip` or `<prefix>chainskip` (alias `<prefix>boqua`, `<prefix>skip`).
+- Vote to skip a word nobody can continue: click the ⏭️ **Skip** button under the game messages, or use
+  `/chainskip` / `<prefix>chainskip` (alias `<prefix>boqua`, `<prefix>skip`).
   When 2 different players vote, the bot reveals a possible answer and starts a new round (nobody wins).
   Votes reset when someone answers correctly.
 - Player profile: `/chainme [member]` or `<prefix>chainme [member]` (alias `<prefix>hoso`)
