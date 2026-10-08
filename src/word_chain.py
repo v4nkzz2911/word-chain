@@ -2,6 +2,7 @@ import json
 import logging
 import random
 import re
+import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -9,8 +10,14 @@ from pathlib import Path
 from wordfreq import top_n_list, zipf_frequency
 
 from storage import GameStore
-from vi_dictionary import EXTRA_WORDLIST_URLS, VietnameseDictionary, ensure_wordlist
-from vi_text import normalize_text, parse_word, syllable_key
+from vi_dictionary import (
+    EXTRA_WORDLIST_URLS,
+    MINHQND_WORDLIST_FILE,
+    VietnameseDictionary,
+    ensure_minhqnd_wordlist,
+    ensure_wordlist,
+)
+from vi_text import parse_word, syllable_key
 
 
 logger = logging.getLogger("hqs-bot")
@@ -136,6 +143,9 @@ class WordChainGameManager:
             if saved is not None:
                 self._active_channel_id, state_json = saved
                 self._active_game = WordChainState.from_json(state_json)
+                if self._active_game.language == "vi":
+                    # Keys may come from an older normalization: rebuild the one that matters.
+                    self._active_game.expected_start_key = syllable_key(self._active_game.expected_start_word)
 
     @property
     def is_vietnamese_ui(self) -> bool:
@@ -165,6 +175,10 @@ class WordChainGameManager:
                 self._vi_dictionary.load_file(ensure_wordlist(data_dir / file_name, url))
             except OSError:
                 logger.warning("Could not load optional word list %s", file_name, exc_info=True)
+        try:
+            self._vi_dictionary.load_file(ensure_minhqnd_wordlist(data_dir / MINHQND_WORDLIST_FILE))
+        except (OSError, sqlite3.Error):
+            logger.warning("Could not load the minhqnd word list", exc_info=True)
         extra = data_dir / "extra_words.txt"  # optional: one word per line
         if extra.exists():
             self._vi_dictionary.load_file(extra)

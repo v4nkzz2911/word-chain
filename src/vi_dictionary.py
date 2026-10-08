@@ -1,6 +1,7 @@
 """Dictionary of 2-syllable Vietnamese words, indexed by first syllable."""
 import logging
 import random
+import sqlite3
 import urllib.request
 from collections import defaultdict
 from pathlib import Path
@@ -19,6 +20,17 @@ EXTRA_WORDLIST_URLS = {
     "words_viet11k.txt": "https://raw.githubusercontent.com/duyet/vietnamese-wordlist/master/Viet11K.txt",
 }
 
+# Dictionary data by @minhqnd (https://dict.minhqnd.com), CC BY-SA 4.0.
+MINHQND_DB_URL = "https://github.com/minhqnd/dictionary/releases/latest/download/dictionary.db"
+MINHQND_WORDLIST_FILE = "words_minhqnd.txt"
+_MINHQND_QUERY = """
+SELECT DISTINCT w.word
+FROM words w
+JOIN word_definitions wd ON wd.word_id = w.id
+JOIN definitions d ON d.id = wd.definition_id
+WHERE w.lang_code = 'vi' AND COALESCE(d.definition_lang, 'vi') = 'vi'
+"""
+
 
 def ensure_wordlist(path: Path, url: str = WORDLIST_URL) -> Path:
     """Download the word list if it is not on disk yet."""
@@ -28,6 +40,38 @@ def ensure_wordlist(path: Path, url: str = WORDLIST_URL) -> Path:
         tmp_path = path.with_suffix(".tmp")
         urllib.request.urlretrieve(url, tmp_path)
         tmp_path.replace(path)
+    return path
+
+
+def ensure_minhqnd_wordlist(path: Path, url: str = MINHQND_DB_URL) -> Path:
+    """Build a word list from the minhqnd dictionary database if it is not on disk yet.
+
+    The database is large (~170 MB), so it is downloaded once, the Vietnamese 2-syllable
+    words that have a Vietnamese definition are extracted, and the database is deleted.
+    """
+    if path.exists():
+        return path
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    db_path = path.with_name("minhqnd_dictionary.db.tmp")
+    tmp_path = path.with_suffix(".tmp")
+    try:
+        logger.info("Downloading minhqnd dictionary database (~170 MB, first run only) from %s", url)
+        urllib.request.urlretrieve(url, db_path)
+        conn = sqlite3.connect(db_path)
+        try:
+            words = sorted({
+                parsed[1]
+                for (word,) in conn.execute(_MINHQND_QUERY)
+                if word and (parsed := parse_word(word))
+            })
+        finally:
+            conn.close()
+        tmp_path.write_text("\n".join(words) + "\n", encoding="utf-8")
+        tmp_path.replace(path)
+        logger.info("Extracted %d words from the minhqnd dictionary", len(words))
+    finally:
+        db_path.unlink(missing_ok=True)
     return path
 
 

@@ -3,6 +3,9 @@
 "hoà" and "hòa", "thuỷ" and "thủy" are the same syllable written with the tone mark
 in a different position. The tone mark is split off each syllable to build a single
 key, so players can type either style.
+
+"mỹ" and "mĩ", "kỳ" and "kì", "quý" and "quí" are the same syllable with an i/y spelling
+variant; the key uses one spelling for both.
 """
 import re
 import unicodedata
@@ -19,6 +22,8 @@ TONE_MARKS = {
 
 _SYLLABLE_RE = re.compile(r"^[^\W\d_]+$")
 _SPACE_RE = re.compile(r"\s+")
+# i/y spelling variants (tone already removed): "my" -> "mi", "ky" -> "ki", "qui" -> "quy"
+_FINAL_Y_RE = re.compile(r"(?<=[hklmst])y$")
 
 
 def normalize_text(text: str) -> str:
@@ -38,7 +43,7 @@ def is_valid_syllable(syllable: str) -> bool:
 
 
 def syllable_key(syllable: str) -> str:
-    """'hoà' and 'hòa' -> the same key 'hoa2'."""
+    """'hoà' and 'hòa' -> the same key 'hoa2'; 'mỹ' and 'mĩ' -> 'mi4'."""
     decomposed = unicodedata.normalize("NFD", syllable.lower())
     tone = ""
     base = []
@@ -47,7 +52,9 @@ def syllable_key(syllable: str) -> str:
             tone = TONE_MARKS[ch]
         else:
             base.append(ch)
-    return unicodedata.normalize("NFC", "".join(base)) + tone
+    key = unicodedata.normalize("NFC", "".join(base))
+    key = "quy" if key == "qui" else _FINAL_Y_RE.sub("i", key)
+    return key + tone
 
 
 def word_key(parts: list[str]) -> str:

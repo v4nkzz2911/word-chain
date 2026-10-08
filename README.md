@@ -63,11 +63,15 @@ Vietnamese aliases work only with the prefix; slash commands keep their English 
 ### Vietnamese (`vi`)
 
 - Every answer is exactly **2 syllables** and must start with the last syllable of the previous word (same tone).
-- Words are checked against the [vietnamese-wordlist](https://github.com/duyet/vietnamese-wordlist) lists
-  (Viet74K + Viet22K + Viet11K, about 48,700 two-syllable words), downloaded to `data/words*.txt` on first run.
-  Viet39K is not used because all of its 2-syllable words are already in Viet74K.
+- Words are checked against about **53,100** two-syllable words from two sources, downloaded to
+  `data/words*.txt` on first run:
+  - [vietnamese-wordlist](https://github.com/duyet/vietnamese-wordlist): Viet74K + Viet22K + Viet11K
+    (Viet39K is not used because all of its 2-syllable words are already in Viet74K).
+  - [minhqnd/dictionary](https://github.com/minhqnd/dictionary): Vietnamese 2-syllable words that have a
+    Vietnamese definition. The first run downloads its ~170 MB database once, extracts the words to
+    `data/words_minhqnd.txt` and deletes the database, so the first start takes a few minutes.
   Extra words can be added in `data/extra_words.txt` (one per line) or with `/chainadd`.
-- Both tone-mark styles are accepted: `hoà`/`hòa`, `thuỷ`/`thủy`.
+- Both tone-mark styles are accepted: `hoà`/`hòa`, `thuỷ`/`thủy`, and both i/y spellings: `mỹ`/`mĩ`, `kỳ`/`kì`, `quý`/`quí`.
 - Starter words are picked from common syllables (via `wordfreq`) so the first move is not too obscure.
 - Messages that are not 2 syllables are treated as chat and ignored.
 - Whoever plays a word that **nobody can continue** wins, and a new round starts automatically.
@@ -80,6 +84,11 @@ Vietnamese aliases work only with the prefix; slash commands keep their English 
 
 - Players reply with a phrase (2+ words) whose first word matches the last word of the previous phrase.
 - Each word is checked against the `wordfreq` English dictionary.
+
+## Dictionary credits
+
+- Word lists by Hồ Ngọc Đức, via [duyet/vietnamese-wordlist](https://github.com/duyet/vietnamese-wordlist) (GPL-2.0).
+- Dictionary data by [@minhqnd](https://github.com/minhqnd), [dict.minhqnd.com](https://dict.minhqnd.com) (CC BY-SA 4.0).
 
 ## Notes
 

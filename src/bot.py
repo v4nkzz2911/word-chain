@@ -79,12 +79,14 @@ def build_bot() -> tuple[commands.Bot, str]:
                 "- Gửi cụm từ (từ 2 từ trở lên) bắt đầu bằng từ cuối của cụm trước: `king` → `king maker` → `maker ...`\n\n"
                 "### **Quy tắc**\n"
                 "- Từ phải có trong từ điển và chưa được dùng trong lượt chơi\n"
-                "- Chấp nhận cả hai kiểu bỏ dấu: `hoà`/`hòa`, `thuỷ`/`thủy`\n"
+                "- Chấp nhận cả hai kiểu bỏ dấu: `hoà`/`hòa`, `thuỷ`/`thủy`, và cả i/y: `mỹ`/`mĩ`, `kỳ`/`kì`\n"
                 "- Không được nối 2 lần liên tiếp\n"
                 "- Mỗi người chơi có cooldown 5 giây giữa hai lần trả lời hợp lệ\n"
                 "- Tin nhắn không phải từ 2 âm tiết được coi là trò chuyện và bị bỏ qua (Tiếng Việt)\n"
                 "- Chỉ được chạy 1 trò chơi nối từ tại một thời điểm\n"
-                "- Bot thả ✅ khi đúng, ❌ khi sai, ⏳ khi chưa đến lượt"
+                "- Bot thả ✅ khi đúng, ❌ khi sai, ⏳ khi chưa đến lượt\n\n"
+                "-# Nguồn từ điển: Hồ Ngọc Đức (vietnamese-wordlist) · dữ liệu từ điển của @minhqnd, "
+                "<https://dict.minhqnd.com> (CC BY-SA 4.0)"
             )
 
         return (
@@ -117,7 +119,9 @@ def build_bot() -> tuple[commands.Bot, str]:
             "- You can't answer twice in a row\n"
             "- Cooldown: each user must wait 5 seconds between accepted answers\n"
             "- Only one word-chain game can run at a time\n"
-            "- The bot reacts ✅ for correct, ❌ for wrong, ⏳ when it's not your turn"
+            "- The bot reacts ✅ for correct, ❌ for wrong, ⏳ when it's not your turn\n\n"
+            "-# Vietnamese dictionary: Hồ Ngọc Đức (vietnamese-wordlist) · dictionary data by @minhqnd, "
+            "<https://dict.minhqnd.com> (CC BY-SA 4.0)"
         )
 
     @bot.event
