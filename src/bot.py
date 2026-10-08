@@ -1,11 +1,14 @@
+import asyncio
 import logging
+from pathlib import Path
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from config import load_config
-from word_chain import WordChainGameManager
+from storage import GameStore
+from word_chain import PhraseStatus, WordChainGameManager
 
 
 logging.basicConfig(
@@ -13,6 +16,16 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger("hqs-bot")
+
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+ERROR_REPLY_DELETE_AFTER = 6.0
+
+
+async def safe_react(message: discord.Message, emoji: str) -> None:
+    try:
+        await message.add_reaction(emoji)
+    except discord.HTTPException:
+        pass
 
 
 def build_bot() -> tuple[commands.Bot, str]:
@@ -35,6 +48,7 @@ def build_bot() -> tuple[commands.Bot, str]:
     word_chain = WordChainGameManager(
         default_language=config.bot_language,
         ui_language=config.bot_language,
+        store=GameStore(DATA_DIR / "word_chain.db"),
     )
 
     def build_help_text() -> str:
@@ -51,17 +65,26 @@ def build_bot() -> tuple[commands.Bot, str]:
                 "### **Trò chơi Nối Từ**\n"
                 f"- `{prefix}chainstart [en|vi]` hoặc `/chainstart` - Bắt đầu trò chơi\n"
                 f"- `{prefix}chainstop` hoặc `/chainstop` - Dừng trò chơi\n"
-                f"- `{prefix}chainstatus` hoặc `/chainstatus` - Xem trạng thái trò chơi\n\n"
-                "### **Cách chơi**\n"
-                f"1. Dùng `{prefix}chainstart [en|vi]` hoặc `/chainstart`\n"
-                "2. Bot đưa ra một từ bắt đầu ngẫu nhiên theo ngôn ngữ đã chọn\n"
-                "3. Người chơi gửi cụm từ mới bắt đầu bằng từ cuối của cụm trước\n"
-                "4. Ví dụ: bot `vua` -> người chơi `vua cờ` -> lượt tiếp theo phải bắt đầu bằng `cờ`\n\n"
+                f"- `{prefix}chainstatus` hoặc `/chainstatus` - Xem trạng thái trò chơi\n"
+                f"- `{prefix}hoso [người]` hoặc `/chainme` - Xem hồ sơ nối từ\n"
+                f"- `{prefix}bxh` hoặc `/chainrank` - Bảng xếp hạng top 20\n"
+                f"- `{prefix}kiemtra <từ>` hoặc `/chaincheck` - Kiểm tra từ có trong từ điển\n"
+                f"- `{prefix}them-tu <từ>` / `{prefix}xoa-tu <từ>` - Thêm/xoá từ tiếng Việt (quản trị)\n\n"
+                "### **Cách chơi (Tiếng Việt)**\n"
+                f"1. Dùng `{prefix}chainstart vi` hoặc `/chainstart`\n"
+                "2. Bot đưa ra một từ gồm 2 âm tiết, ví dụ `học sinh`\n"
+                "3. Người chơi gửi một từ 2 âm tiết bắt đầu bằng âm tiết cuối (đúng cả dấu): `sinh viên` → `viên chức`\n"
+                "4. Ai nối đến từ mà **không còn từ nào nối tiếp được** sẽ thắng 🏆, bot tự mở lượt mới\n\n"
+                "### **Cách chơi (Tiếng Anh)**\n"
+                "- Gửi cụm từ (từ 2 từ trở lên) bắt đầu bằng từ cuối của cụm trước: `king` → `king maker` → `maker ...`\n\n"
                 "### **Quy tắc**\n"
-                "- Từ đầu tiên phải đúng với từ được yêu cầu\n"
-                "- Các từ sẽ được đối chiếu trong từ điển theo ngôn ngữ đang chơi\n"
+                "- Từ phải có trong từ điển và chưa được dùng trong lượt chơi\n"
+                "- Chấp nhận cả hai kiểu bỏ dấu: `hoà`/`hòa`, `thuỷ`/`thủy`\n"
+                "- Không được nối 2 lần liên tiếp\n"
+                "- Mỗi người chơi có cooldown 5 giây giữa hai lần trả lời hợp lệ\n"
+                "- Tin nhắn không phải từ 2 âm tiết được coi là trò chuyện và bị bỏ qua (Tiếng Việt)\n"
                 "- Chỉ được chạy 1 trò chơi nối từ tại một thời điểm\n"
-                "- Mỗi người chơi có cooldown 5 giây giữa hai lần trả lời hợp lệ"
+                "- Bot thả ✅ khi đúng, ❌ khi sai, ⏳ khi chưa đến lượt"
             )
 
         return (
@@ -75,17 +98,26 @@ def build_bot() -> tuple[commands.Bot, str]:
             "### **Word-chain Game**\n"
             f"- `{prefix}chainstart [en|vi]` or `/chainstart` - Start a new game in this channel\n"
             f"- `{prefix}chainstop` or `/chainstop` - Stop the current game in this channel\n"
-            f"- `{prefix}chainstatus` or `/chainstatus` - Show game status in this channel\n\n"
-            "### **How To Play**\n"
+            f"- `{prefix}chainstatus` or `/chainstatus` - Show game status in this channel\n"
+            f"- `{prefix}chainme [member]` or `/chainme` - Show a word-chain profile\n"
+            f"- `{prefix}chainrank` or `/chainrank` - Top 20 leaderboard\n"
+            f"- `{prefix}chaincheck <word>` or `/chaincheck` - Check a word against the dictionary\n"
+            f"- `{prefix}chainadd <word>` / `{prefix}chainremove <word>` - Edit the Vietnamese dictionary (admin)\n\n"
+            "### **How To Play (English)**\n"
             f"1. Run `{prefix}chainstart [en|vi]` or `/chainstart`\n"
             "2. Bot gives a random starter word from the dictionary in the selected language\n"
             "3. Send a phrase that starts with the last word of the previous phrase\n"
             "4. Example: bot says `king` -> player says `king maker` -> next phrase must start with `maker`\n\n"
+            "### **How To Play (Vietnamese)**\n"
+            "- Each answer is exactly 2 syllables and starts with the last syllable (same tone): `học sinh` -> `sinh viên`\n"
+            "- Whoever plays a word that **nobody can continue** wins 🏆 and a new round starts\n\n"
             "### **Rules**\n"
             "- Your first word must match the expected start word\n"
-            "- Words are validated against the current game language dictionary\n"
+            "- Words are validated against the current game language dictionary and can't be reused\n"
+            "- You can't answer twice in a row\n"
+            "- Cooldown: each user must wait 5 seconds between accepted answers\n"
             "- Only one word-chain game can run at a time\n"
-            "- Cooldown: each user must wait 5 seconds between accepted answers"
+            "- The bot reacts ✅ for correct, ❌ for wrong, ⏳ when it's not your turn"
         )
 
     @bot.event
@@ -94,6 +126,17 @@ def build_bot() -> tuple[commands.Bot, str]:
 
     @bot.event
     async def setup_hook() -> None:
+        try:
+            await asyncio.to_thread(word_chain.load_vietnamese_word_files, DATA_DIR)
+            word_chain.apply_custom_words()
+            logger.info(
+                "Loaded %d Vietnamese 2-syllable words (%d starter words)",
+                len(word_chain.vi_dictionary),
+                word_chain.vi_dictionary.start_pool_size,
+            )
+        except Exception:
+            logger.exception("Failed to load the Vietnamese dictionary; Vietnamese games are unavailable")
+
         if config.guild_id:
             guild = discord.Object(id=config.guild_id)
             bot.tree.copy_global_to(guild=guild)
@@ -102,6 +145,30 @@ def build_bot() -> tuple[commands.Bot, str]:
         else:
             await bot.tree.sync()
             logger.info("Synced global commands")
+
+    @bot.event
+    async def on_command_error(ctx: commands.Context, error: commands.CommandError) -> None:
+        if isinstance(error, commands.CommandNotFound):
+            return
+        if isinstance(error, commands.MissingPermissions):
+            text = tr(
+                "❌ You need the **Manage Server** permission to use this command.",
+                "❌ Bạn cần quyền **Quản lý máy chủ** để dùng lệnh này.",
+            )
+        elif isinstance(error, commands.NoPrivateMessage):
+            text = tr("❌ This command can only be used in a server.", "❌ Lệnh này chỉ dùng trong server.")
+        elif isinstance(error, (commands.MissingRequiredArgument, commands.BadArgument)):
+            text = tr(
+                f"❌ Missing or invalid argument. Use `{config.command_prefix}help` for usage.",
+                f"❌ Thiếu hoặc sai tham số. Gõ `{config.command_prefix}help` để xem hướng dẫn.",
+            )
+        else:
+            logger.exception("Command %s failed", ctx.command, exc_info=error)
+            text = tr("❌ Something went wrong.", "❌ Đã có lỗi xảy ra.")
+        try:
+            await ctx.send(text)
+        except discord.HTTPException:
+            pass
 
     @bot.tree.command(name="ping", description="Check if the bot is alive")
     async def ping(interaction: discord.Interaction) -> None:
@@ -187,6 +254,64 @@ def build_bot() -> tuple[commands.Bot, str]:
         _, response = word_chain.game_status(interaction.channel.id)
         await interaction.response.send_message(response)
 
+    @bot.command(name="chainme", aliases=["chainprofile", "hoso"])
+    async def chain_me(ctx: commands.Context, member: discord.Member | None = None) -> None:
+        member = member or ctx.author
+        await ctx.send(word_chain.player_profile(member.id, member.display_name))
+
+    @bot.tree.command(name="chainme", description="Show a word-chain profile")
+    @app_commands.describe(member="Member to show (default: you)")
+    async def slash_chain_me(interaction: discord.Interaction, member: discord.Member | None = None) -> None:
+        target = member or interaction.user
+        await interaction.response.send_message(word_chain.player_profile(target.id, target.display_name))
+
+    @bot.command(name="chainrank", aliases=["chaintop", "bxh"])
+    async def chain_rank(ctx: commands.Context) -> None:
+        await ctx.send(word_chain.leaderboard(), allowed_mentions=discord.AllowedMentions.none())
+
+    @bot.tree.command(name="chainrank", description="Show the word-chain top 20 leaderboard")
+    async def slash_chain_rank(interaction: discord.Interaction) -> None:
+        await interaction.response.send_message(
+            word_chain.leaderboard(), allowed_mentions=discord.AllowedMentions.none()
+        )
+
+    @bot.command(name="chaincheck", aliases=["kiemtra"])
+    async def chain_check(ctx: commands.Context, *, word: str) -> None:
+        _, response = word_chain.check_word(word)
+        await ctx.send(response)
+
+    @bot.tree.command(name="chaincheck", description="Check whether a word is in the dictionary")
+    @app_commands.describe(word="Word to check (Vietnamese: exactly 2 syllables)")
+    async def slash_chain_check(interaction: discord.Interaction, word: str) -> None:
+        _, response = word_chain.check_word(word)
+        await interaction.response.send_message(response)
+
+    @bot.command(name="chainadd", aliases=["themtu", "them-tu"])
+    @commands.has_guild_permissions(manage_guild=True)
+    async def chain_add(ctx: commands.Context, *, word: str) -> None:
+        _, response = word_chain.add_word(word, ctx.author.id)
+        await ctx.send(response)
+
+    @bot.tree.command(name="chainadd", description="Add a Vietnamese word to the dictionary (admin)")
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.describe(word="Vietnamese word with exactly 2 syllables")
+    async def slash_chain_add(interaction: discord.Interaction, word: str) -> None:
+        _, response = word_chain.add_word(word, interaction.user.id)
+        await interaction.response.send_message(response)
+
+    @bot.command(name="chainremove", aliases=["xoatu", "xoa-tu"])
+    @commands.has_guild_permissions(manage_guild=True)
+    async def chain_remove(ctx: commands.Context, *, word: str) -> None:
+        _, response = word_chain.remove_word(word, ctx.author.id)
+        await ctx.send(response)
+
+    @bot.tree.command(name="chainremove", description="Remove a Vietnamese word from the dictionary (admin)")
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.describe(word="Vietnamese word with exactly 2 syllables")
+    async def slash_chain_remove(interaction: discord.Interaction, word: str) -> None:
+        _, response = word_chain.remove_word(word, interaction.user.id)
+        await interaction.response.send_message(response)
+
     @bot.event
     async def on_message(message: discord.Message) -> None:
         if message.author.bot:
@@ -197,17 +322,34 @@ def build_bot() -> tuple[commands.Bot, str]:
             await bot.process_commands(message)
             return
 
-        response = word_chain.handle_player_phrase(
+        result = word_chain.handle_player_phrase(
             message.channel.id,
             message.author.id,
             message.author.display_name,
             message.content,
         )
-        if response is not None:
-            _, text = response
-            await message.channel.send(text)
+        if result is None:
+            return
 
-        await bot.process_commands(message)
+        if result.status == PhraseStatus.OK:
+            await safe_react(message, "✅")
+            return
+
+        if result.status == PhraseStatus.WIN:
+            await safe_react(message, "✅")
+            await message.channel.send(result.message)
+            return
+
+        waiting = result.status in (PhraseStatus.SAME_PLAYER, PhraseStatus.COOLDOWN)
+        await safe_react(message, "⏳" if waiting else "❌")
+        try:
+            await message.reply(
+                result.message,
+                delete_after=ERROR_REPLY_DELETE_AFTER,
+                mention_author=False,
+            )
+        except discord.HTTPException:
+            pass
 
     return bot, config.token
 
