@@ -41,6 +41,8 @@ python src/bot.py
 - Start word-chain game: `/chainstart` or `<prefix>chainstart [en|vi]`
 - Stop word-chain game: `/chainstop` or `<prefix>chainstop`
 - Show word-chain status: `/chainstatus` or `<prefix>chainstatus`
+- Hint for the next word (Vietnamese games, 5 per person per day, resets at midnight Vietnam time):
+  `/chainhint` (only you see it) or `<prefix>chainhint` (alias `<prefix>goiy`, `<prefix>hint`)
 - Player profile: `/chainme [member]` or `<prefix>chainme [member]` (alias `<prefix>hoso`)
 - Top 20 leaderboard: `/chainrank` or `<prefix>chainrank` (alias `<prefix>bxh`)
 - Check a word: `/chaincheck <word>` or `<prefix>chaincheck <word>` (alias `<prefix>kiemtra`)

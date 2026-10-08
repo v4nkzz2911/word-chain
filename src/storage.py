@@ -20,6 +20,12 @@ CREATE TABLE IF NOT EXISTS custom_words (
     added   INTEGER NOT NULL,  -- 1 = added, 0 = removed from dictionary
     by_user INTEGER
 );
+CREATE TABLE IF NOT EXISTS hint_usage (
+    user_id INTEGER NOT NULL,
+    day     TEXT NOT NULL,     -- YYYY-MM-DD in Vietnam time
+    used    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, day)
+);
 """
 
 _STAT_FIELDS = {"correct", "wrong", "wins"}
@@ -84,6 +90,23 @@ class GameStore:
             (player["wins"], player["wins"], player["correct"]),
         ).fetchone()
         return row["n"] + 1
+
+    # ---------- hints ----------
+    def hints_used(self, user_id: int, day: str) -> int:
+        row = self.conn.execute(
+            "SELECT used FROM hint_usage WHERE user_id = ? AND day = ?", (user_id, day)
+        ).fetchone()
+        return row["used"] if row else 0
+
+    def record_hint(self, user_id: int, day: str) -> None:
+        self.conn.execute(
+            "INSERT INTO hint_usage (user_id, day, used) VALUES (?, ?, 1) "
+            "ON CONFLICT(user_id, day) DO UPDATE SET used = used + 1",
+            (user_id, day),
+        )
+        # Older days are no longer needed.
+        self.conn.execute("DELETE FROM hint_usage WHERE day < ?", (day,))
+        self.conn.commit()
 
     # ---------- custom words ----------
     def set_custom_word(self, word: str, added: bool, by_user: int | None) -> None:

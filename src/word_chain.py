@@ -5,6 +5,7 @@ import re
 import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from wordfreq import top_n_list, zipf_frequency
@@ -22,6 +23,9 @@ from vi_text import parse_word, syllable_key
 
 logger = logging.getLogger("hqs-bot")
 
+
+# Daily limits (e.g. hints) reset at midnight Vietnam time. Vietnam has no daylight saving time.
+VIETNAM_TZ = timezone(timedelta(hours=7))
 
 LANGUAGE_LABELS = {
     "en": "English",
@@ -110,6 +114,7 @@ class WordChainState:
 
 class WordChainGameManager:
     COOLDOWN_SECONDS = 5.0
+    HINTS_PER_DAY = 5
     _STARTER_WORD_POOL_SIZE = 5000
     _MEANINGFUL_WORD_MIN_ZIPF = 2.5
     # Each syllable of a Vietnamese starter word must be at least this common.
@@ -130,6 +135,7 @@ class WordChainGameManager:
         normalized_ui = self.normalize_language(ui_language) if ui_language is not None else None
         self._ui_language = normalized_ui or self._default_language
         self._starter_word_cache: dict[str, list[str]] = {}
+        self._hints_used: dict[tuple[int, str], int] = {}  # used only without a store
         self._store = store
         self._vi_dictionary = (
             vi_dictionary
@@ -436,6 +442,64 @@ class WordChainGameManager:
             f"> **Từ bắt đầu yêu cầu:** `{game.expected_start_word}`\n"
             f"> **Số lượt nối:** `{game.turns}`\n"
             f"> **Cooldown mỗi người:** `{int(self.COOLDOWN_SECONDS)}s`",
+        )
+
+    # ---------- hints ----------
+    @staticmethod
+    def _mask_hint(display: str) -> str:
+        """'lực sĩ' -> 'lực s_': first syllable in full, only the first letter of the second."""
+        first, second = display.split(" ")
+        return f"{first} {second[0]}{'_' * (len(second) - 1)}"
+
+    def _get_hints_used(self, user_id: int, day: str) -> int:
+        if self._store is not None:
+            return self._store.hints_used(user_id, day)
+        return self._hints_used.get((user_id, day), 0)
+
+    def _record_hint(self, user_id: int, day: str) -> None:
+        if self._store is not None:
+            self._store.record_hint(user_id, day)
+        else:
+            self._hints_used[(user_id, day)] = self._hints_used.get((user_id, day), 0) + 1
+
+    def give_hint(self, channel_id: int, user_id: int) -> tuple[bool, str]:
+        game = self._active_game
+        if game is None or self._active_channel_id != channel_id:
+            return False, self._tr(
+                "❌ **No active word-chain game in this channel**",
+                "❌ **Không có trò chơi nối từ nào đang hoạt động trong kênh này**",
+            )
+        if game.language != "vi":
+            return False, self._tr(
+                "❌ **Hints are only available in Vietnamese games**",
+                "❌ **Gợi ý chỉ có trong trò chơi tiếng Việt**",
+            )
+
+        day = datetime.now(VIETNAM_TZ).date().isoformat()
+        used = self._get_hints_used(user_id, day)
+        if used >= self.HINTS_PER_DAY:
+            return False, self._tr(
+                f"❌ **You have used all {self.HINTS_PER_DAY} hints for today**\n> Hints reset at midnight (Vietnam time).",
+                f"❌ **Bạn đã dùng hết {self.HINTS_PER_DAY} lượt gợi ý hôm nay**\n> Lượt gợi ý được làm mới lúc 0 giờ (giờ Việt Nam).",
+            )
+
+        options = self._vi_dictionary.candidates(game.expected_start_key, game.used)
+        if not options:
+            return False, self._tr(
+                "❌ **No word can follow anymore**",
+                "❌ **Không còn từ nào để nối tiếp**",
+            )
+
+        hint = self._mask_hint(self._vi_dictionary.words[random.choice(options)])
+        self._record_hint(user_id, day)
+        remaining = self.HINTS_PER_DAY - used - 1
+        return True, self._tr(
+            f"💡 **Hint:** `{hint}`\n"
+            f"> **{len(options)}** word(s) can follow `{game.expected_start_word}`.\n"
+            f"> Hints left today: **{remaining}/{self.HINTS_PER_DAY}**",
+            f"💡 **Gợi ý:** `{hint}`\n"
+            f"> Có **{len(options)}** từ có thể nối tiếp `{game.expected_start_word}`.\n"
+            f"> Lượt gợi ý còn lại hôm nay: **{remaining}/{self.HINTS_PER_DAY}**",
         )
 
     # ---------- turns ----------

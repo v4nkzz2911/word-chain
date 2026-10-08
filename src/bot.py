@@ -66,6 +66,7 @@ def build_bot() -> tuple[commands.Bot, str]:
                 f"- `{prefix}chainstart [en|vi]` hoặc `/chainstart` - Bắt đầu trò chơi\n"
                 f"- `{prefix}chainstop` hoặc `/chainstop` - Dừng trò chơi\n"
                 f"- `{prefix}chainstatus` hoặc `/chainstatus` - Xem trạng thái trò chơi\n"
+                f"- `{prefix}goiy` hoặc `/chainhint` - Gợi ý từ tiếp theo (5 lần/ngày, `/chainhint` chỉ mình bạn thấy)\n"
                 f"- `{prefix}hoso [người]` hoặc `/chainme` - Xem hồ sơ nối từ\n"
                 f"- `{prefix}bxh` hoặc `/chainrank` - Bảng xếp hạng top 20\n"
                 f"- `{prefix}kiemtra <từ>` hoặc `/chaincheck` - Kiểm tra từ có trong từ điển\n"
@@ -100,6 +101,7 @@ def build_bot() -> tuple[commands.Bot, str]:
             f"- `{prefix}chainstart [en|vi]` or `/chainstart` - Start a new game in this channel\n"
             f"- `{prefix}chainstop` or `/chainstop` - Stop the current game in this channel\n"
             f"- `{prefix}chainstatus` or `/chainstatus` - Show game status in this channel\n"
+            f"- `{prefix}chainhint` or `/chainhint` - Hint for the next word (Vietnamese games, 5 per day)\n"
             f"- `{prefix}chainme [member]` or `/chainme` - Show a word-chain profile\n"
             f"- `{prefix}chainrank` or `/chainrank` - Top 20 leaderboard\n"
             f"- `{prefix}chaincheck <word>` or `/chaincheck` - Check a word against the dictionary\n"
@@ -255,6 +257,27 @@ def build_bot() -> tuple[commands.Bot, str]:
 
         _, response = word_chain.game_status(interaction.channel.id)
         await interaction.response.send_message(response)
+
+    @bot.command(name="chainhint", aliases=["goiy", "hint"])
+    async def chain_hint(ctx: commands.Context) -> None:
+        _, response = word_chain.give_hint(ctx.channel.id, ctx.author.id)
+        await ctx.reply(response, mention_author=False)
+
+    @bot.tree.command(name="chainhint", description="Get a hint for the next word (5 per day)")
+    async def slash_chain_hint(interaction: discord.Interaction) -> None:
+        if interaction.channel is None:
+            await interaction.response.send_message(
+                tr(
+                    "This command must be used in a channel.",
+                    "Lệnh này chỉ có thể dùng trong kênh.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        _, response = word_chain.give_hint(interaction.channel.id, interaction.user.id)
+        # Only the player who asked sees the hint.
+        await interaction.response.send_message(response, ephemeral=True)
 
     @bot.command(name="chainme", aliases=["chainprofile", "hoso"])
     async def chain_me(ctx: commands.Context, member: discord.Member | None = None) -> None:
