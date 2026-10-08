@@ -56,8 +56,8 @@ Vietnamese aliases work only with the prefix; slash commands keep their English 
 - Run `!chainstart` and the bot sends a random starter word from dictionary.
 - You can force language when starting: `!chainstart en` or `!chainstart vi`.
 - If you do not pass a language, the game uses `DISCORD_BOT_LANGUAGE`.
-- A player cannot answer twice in a row, and each user has a 5-second cooldown between accepted answers.
-- The bot reacts ✅ (correct), ❌ (wrong) or ⏳ (not your turn yet); error replies delete themselves after 6 seconds.
+- Players can answer several times in a row, but each user has a 5-second cooldown between accepted answers.
+- The bot reacts ✅ (correct), ❌ (wrong) or ⏳ (still on cooldown); error replies delete themselves after 6 seconds.
 - The active game and player stats are saved in `data/word_chain.db`, so a restart does not lose them.
 
 ### Vietnamese (`vi`)

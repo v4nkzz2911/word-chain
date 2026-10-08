@@ -72,7 +72,6 @@ class PhraseStatus:
     OK = "ok"                    # accepted
     WIN = "win"                  # accepted and nothing can follow -> player wins (Vietnamese only)
     INVALID = "invalid"          # not a usable phrase
-    SAME_PLAYER = "same_player"  # same player answered twice in a row
     COOLDOWN = "cooldown"        # player is still on cooldown
     WRONG_START = "wrong_start"  # does not start with the expected word
     NOT_IN_DICT = "not_in_dict"  # unknown word(s)
@@ -318,13 +317,13 @@ class WordChainGameManager:
                 f"> **Language:** `{language_label}`\n"
                 f"> **Starter word:** `{game.current_phrase}`\n"
                 f"> **Next word must start with:** `{game.expected_start_word}`\n"
-                "> **Rule:** exactly 2 syllables, no answering twice in a row\n"
+                "> **Rule:** exactly 2 syllables\n"
                 f"> **Cooldown per user:** `{int(self.COOLDOWN_SECONDS)}s`",
                 f"{title}\n"
                 f"> **Ngôn ngữ:** `{language_label}`\n"
                 f"> **Từ bắt đầu:** `{game.current_phrase}`\n"
                 f"> **Từ tiếp theo phải bắt đầu bằng:** `{game.expected_start_word}`\n"
-                "> **Luật:** đúng 2 âm tiết, không nối 2 lần liên tiếp\n"
+                "> **Luật:** đúng 2 âm tiết\n"
                 f"> **Cooldown mỗi người:** `{int(self.COOLDOWN_SECONDS)}s`",
             )
         return self._tr(
@@ -440,18 +439,7 @@ class WordChainGameManager:
         )
 
     # ---------- turns ----------
-    def _check_turn_order(
-        self, game: WordChainState, key: tuple[int, int], user_id: int, user_name: str, now: float
-    ) -> PhraseResult | None:
-        if game.last_player_id == user_id:
-            return PhraseResult(
-                PhraseStatus.SAME_PLAYER,
-                self._tr(
-                    "⏳ **You just answered**\n> Wait for someone else to continue the chain.",
-                    "⏳ **Bạn vừa nối rồi**\n> Chờ người khác nối tiếp nhé!",
-                ),
-            )
-
+    def _check_cooldown(self, key: tuple[int, int], user_name: str, now: float) -> PhraseResult | None:
         last_answer_at = self._last_answer_at.get(key)
         if last_answer_at is not None:
             elapsed = now - last_answer_at
@@ -460,8 +448,8 @@ class WordChainGameManager:
                 return PhraseResult(
                     PhraseStatus.COOLDOWN,
                     self._tr(
-                        f"❌ **{user_name} is on cooldown**\n> Please wait **{remaining:.1f}s** before your next answer.",
-                        f"❌ **{user_name} đang trong cooldown**\n> Vui lòng chờ **{remaining:.1f}s** trước khi trả lời tiếp.",
+                        f"⏳ **{user_name} is on cooldown**\n> Please wait **{remaining:.1f}s** before your next answer.",
+                        f"⏳ **{user_name} đang trong cooldown**\n> Vui lòng chờ **{remaining:.1f}s** trước khi trả lời tiếp.",
                     ),
                 )
         return None
@@ -543,9 +531,9 @@ class WordChainGameManager:
 
         now = time.monotonic()
         key = (channel_id, user_id)
-        turn_error = self._check_turn_order(game, key, user_id, user_name, now)
-        if turn_error is not None:
-            return turn_error
+        cooldown_error = self._check_cooldown(key, user_name, now)
+        if cooldown_error is not None:
+            return cooldown_error
 
         if first_key != game.expected_start_key:
             return PhraseResult(
@@ -634,9 +622,9 @@ class WordChainGameManager:
         if normalized_phrase in game.used:
             return PhraseResult(PhraseStatus.USED, self._used_message(game.used[normalized_phrase]))
 
-        turn_error = self._check_turn_order(game, key, user_id, user_name, now)
-        if turn_error is not None:
-            return turn_error
+        cooldown_error = self._check_cooldown(key, user_name, now)
+        if cooldown_error is not None:
+            return cooldown_error
 
         edge_words = self._extract_edge_words(text)
         if edge_words is None:
