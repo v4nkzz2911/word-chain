@@ -220,6 +220,6 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Word-chain bot runtime data (data/extra_words.txt stays tracked)
-data/words.txt
-data/words.tmp
+data/words*.txt
+data/*.tmp
 data/*.db

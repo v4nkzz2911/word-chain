@@ -12,6 +12,12 @@ from vi_text import parse_word
 logger = logging.getLogger("hqs-bot")
 
 WORDLIST_URL = "https://raw.githubusercontent.com/duyet/vietnamese-wordlist/master/Viet74K.txt"
+# Smaller lists from the same repo that contain words missing from Viet74K
+# (Viet39K is left out: all of its 2-syllable words are already in Viet74K).
+EXTRA_WORDLIST_URLS = {
+    "words_viet22k.txt": "https://raw.githubusercontent.com/duyet/vietnamese-wordlist/master/Viet22K.txt",
+    "words_viet11k.txt": "https://raw.githubusercontent.com/duyet/vietnamese-wordlist/master/Viet11K.txt",
+}
 
 
 def ensure_wordlist(path: Path, url: str = WORDLIST_URL) -> Path:

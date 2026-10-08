@@ -63,7 +63,9 @@ Vietnamese aliases work only with the prefix; slash commands keep their English 
 ### Vietnamese (`vi`)
 
 - Every answer is exactly **2 syllables** and must start with the last syllable of the previous word (same tone).
-- Words are checked against the [Viet74K](https://github.com/duyet/vietnamese-wordlist) word list, downloaded to `data/words.txt` on first run.
+- Words are checked against the [vietnamese-wordlist](https://github.com/duyet/vietnamese-wordlist) lists
+  (Viet74K + Viet22K + Viet11K, about 48,700 two-syllable words), downloaded to `data/words*.txt` on first run.
+  Viet39K is not used because all of its 2-syllable words are already in Viet74K.
   Extra words can be added in `data/extra_words.txt` (one per line) or with `/chainadd`.
 - Both tone-mark styles are accepted: `hoà`/`hòa`, `thuỷ`/`thủy`.
 - Starter words are picked from common syllables (via `wordfreq`) so the first move is not too obscure.

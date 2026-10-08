@@ -1,4 +1,5 @@
 import json
+import logging
 import random
 import re
 import time
@@ -8,8 +9,11 @@ from pathlib import Path
 from wordfreq import top_n_list, zipf_frequency
 
 from storage import GameStore
-from vi_dictionary import VietnameseDictionary, ensure_wordlist
+from vi_dictionary import EXTRA_WORDLIST_URLS, VietnameseDictionary, ensure_wordlist
 from vi_text import normalize_text, parse_word, syllable_key
+
+
+logger = logging.getLogger("hqs-bot")
 
 
 LANGUAGE_LABELS = {
@@ -156,6 +160,11 @@ class WordChainGameManager:
         Blocking file/network I/O: run it in a worker thread.
         """
         self._vi_dictionary.load_file(ensure_wordlist(data_dir / "words.txt"))
+        for file_name, url in EXTRA_WORDLIST_URLS.items():
+            try:
+                self._vi_dictionary.load_file(ensure_wordlist(data_dir / file_name, url))
+            except OSError:
+                logger.warning("Could not load optional word list %s", file_name, exc_info=True)
         extra = data_dir / "extra_words.txt"  # optional: one word per line
         if extra.exists():
             self._vi_dictionary.load_file(extra)
