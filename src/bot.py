@@ -20,12 +20,106 @@ logger = logging.getLogger("hqs-bot")
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 ERROR_REPLY_DELETE_AFTER = 6.0
 
+_STATUS_REACTIONS = {
+    PhraseStatus.OK: "✅",
+    PhraseStatus.WIN: "✅",
+    PhraseStatus.COOLDOWN: "⏳",
+    PhraseStatus.BANNED: "⚠️",
+}
+
+
+def reaction_for(status: str) -> str:
+    """Reaction the bot puts on a player's answer."""
+    return _STATUS_REACTIONS.get(status, "❌")
+
+
+def reply_delete_after(status: str) -> float | None:
+    """Error replies delete themselves; the offensive-word warning stays (None)."""
+    return None if status == PhraseStatus.BANNED else ERROR_REPLY_DELETE_AFTER
+
 
 async def safe_react(message: discord.Message, emoji: str) -> None:
     try:
         await message.add_reaction(emoji)
     except discord.HTTPException:
         pass
+
+
+def build_help_text(prefix: str, bot_language: str) -> str:
+    if bot_language == "vi":
+        return (
+            "## **HQS Bot Help**\n"
+            "> **Ngôn ngữ cấu hình hiện tại:** `Tiếng Việt (vi)`\n\n"
+            "### **Lệnh chung**\n"
+            f"- `{prefix}help` - Hiển thị hướng dẫn\n"
+            f"- `{prefix}hello` - Trả lời lời chào\n"
+            "- `/ping` - Kiểm tra bot còn hoạt động\n"
+            "- `/help` - Hiển thị hướng dẫn\n\n"
+            "### **Trò chơi Nối Từ**\n"
+            f"- `{prefix}chainstart [en|vi]` hoặc `/chainstart` - Bắt đầu trò chơi\n"
+            f"- `{prefix}chainstop` hoặc `/chainstop` - Dừng trò chơi\n"
+            f"- `{prefix}chainstatus` hoặc `/chainstatus` - Xem trạng thái trò chơi\n"
+            f"- `{prefix}goiy` hoặc `/chainhint` - Gợi ý từ tiếp theo (5 lần/ngày, `/chainhint` chỉ mình bạn thấy)\n"
+            f"- Nút ⏭️ **Bỏ qua**, `{prefix}boqua` hoặc `/chainskip` - Bỏ phiếu bỏ qua từ khó, cần 2 người\n"
+            f"- `{prefix}hoso [người]` hoặc `/chainme` - Xem hồ sơ nối từ\n"
+            f"- `{prefix}bxh [en|vi]` hoặc `/chainrank` - Bảng xếp hạng top 20\n"
+            f"- `{prefix}kiemtra <từ>` hoặc `/chaincheck` - Kiểm tra từ có trong từ điển\n"
+            f"- `{prefix}them-tu <từ>` / `{prefix}xoa-tu <từ>` - Thêm/xoá từ tiếng Anh hoặc tiếng Việt (quản trị)\n\n"
+            "### **Cách chơi (Tiếng Việt)**\n"
+            f"1. Dùng `{prefix}chainstart vi` hoặc `/chainstart`\n"
+            "2. Bot đưa ra một từ gồm 2 âm tiết, ví dụ `học sinh`\n"
+            "3. Người chơi gửi một từ 2 âm tiết bắt đầu bằng âm tiết cuối (đúng cả dấu): `sinh viên` → `viên chức`\n"
+            "4. Ai nối đến từ mà **không còn từ nào nối tiếp được** sẽ thắng 🏆, bot tự mở lượt mới\n\n"
+            "### **Cách chơi (Tiếng Anh)**\n"
+            "- Gửi MỘT từ (3+ chữ cái) bắt đầu bằng chữ cái cuối của từ trước: `apple` → `egg` → `goat`\n"
+            "- Tin nhắn có dấu cách bị bỏ qua\n\n"
+            "### **Quy tắc**\n"
+            "- Từ phải có trong từ điển và chưa được dùng trong lượt chơi\n"
+            "- Chấp nhận cả hai kiểu bỏ dấu: `hoà`/`hòa`, `thuỷ`/`thủy`, và cả i/y: `mỹ`/`mĩ`, `kỳ`/`kì`\n"
+            "- Mỗi người chơi có cooldown 5 giây giữa hai lần trả lời hợp lệ\n"
+            "- Tin nhắn không phải từ 2 âm tiết được coi là trò chuyện và bị bỏ qua (Tiếng Việt)\n"
+            "- Chỉ được chạy 1 trò chơi nối từ tại một thời điểm\n"
+            "- Bot thả ✅ đúng, ❌ sai, ⏳ cooldown, ⚠️ từ xúc phạm (bị cấm)\n\n"
+            "-# Nguồn từ điển: Hồ Ngọc Đức (vietnamese-wordlist) · dữ liệu từ điển của @minhqnd, "
+            "<https://dict.minhqnd.com> (CC BY-SA 4.0) · ENABLE (public domain)"
+        )
+
+    return (
+        "## **HQS Bot Help**\n"
+        "> **Configured language:** `English (en)`\n\n"
+        "### **General**\n"
+        f"- `{prefix}help` - Show this help message\n"
+        f"- `{prefix}hello` - Quick hello response\n"
+        "- `/ping` - Check if the bot is alive\n"
+        "- `/help` - Show this help message\n\n"
+        "### **Word-chain Game**\n"
+        f"- `{prefix}chainstart [en|vi]` or `/chainstart` - Start a new game\n"
+        f"- `{prefix}chainstop` or `/chainstop` - Stop the current game\n"
+        f"- `{prefix}chainstatus` or `/chainstatus` - Show game status\n"
+        f"- `{prefix}chainhint` or `/chainhint` - Hint for the next word (5 per day)\n"
+        f"- ⏭️ **Skip** button, `{prefix}chainskip` or `/chainskip` - Vote to skip a stuck word (2 votes)\n"
+        f"- `{prefix}chainme [member]` or `/chainme` - Show a word-chain profile\n"
+        f"- `{prefix}chainrank [en|vi]` or `/chainrank` - Top 20 per language\n"
+        f"- `{prefix}chaincheck <word>` or `/chaincheck` - Check a word against the dictionary\n"
+        f"- `{prefix}chainadd <word>` / `{prefix}chainremove <word>` - Edit the dictionary (admin)\n\n"
+        "### **How To Play (English)**\n"
+        f"1. Run `{prefix}chainstart [en|vi]` or `/chainstart`\n"
+        "2. Bot gives a random starter word, e.g. `apple`\n"
+        "3. Send ONE word (3+ letters) starting with the LAST LETTER of the previous one: `apple` -> `egg` -> `goat`\n"
+        "4. Messages with spaces are ignored. If nothing can follow, you win 🏆 and a new round starts\n\n"
+        "### **How To Play (Vietnamese)**\n"
+        "- Each answer is exactly 2 syllables and starts with the last syllable (same tone): `học sinh` -> `sinh viên`\n"
+        "- Whoever plays a word that **nobody can continue** wins 🏆 and a new round starts\n\n"
+        "### **Rules**\n"
+        "- Start with the last letter (English) or last syllable (Vietnamese) of the previous word\n"
+        "- Words must be in the dictionary and can't be reused\n"
+        "- Cooldown: 5 seconds between accepted answers per user\n"
+        "- Only one word-chain game can run at a time\n"
+        "- The bot reacts ✅ correct, ❌ wrong, ⏳ cooldown, ⚠️ offensive word (banned)\n\n"
+        "-# English dictionary: ENABLE (public domain) · "
+        "Vietnamese dictionary: Hồ Ngọc Đức (vietnamese-wordlist) · dictionary data by @minhqnd, "
+        "<https://dict.minhqnd.com> (CC BY-SA 4.0)"
+    )
 
 
 def build_bot() -> tuple[commands.Bot, str]:
@@ -88,83 +182,6 @@ def build_bot() -> tuple[commands.Bot, str]:
             await interaction.response.send_message(response, ephemeral=True)
             return
         await interaction.response.send_message(response, **skip_button_kwargs(interaction.channel.id))
-
-    def build_help_text() -> str:
-        prefix = config.command_prefix
-        if config.bot_language == "vi":
-            return (
-                "## **HQS Bot Help**\n"
-                "> **Ngôn ngữ cấu hình hiện tại:** `Tiếng Việt (vi)`\n\n"
-                "### **Lệnh chung**\n"
-                f"- `{prefix}help` - Hiển thị hướng dẫn\n"
-                f"- `{prefix}hello` - Trả lời lời chào\n"
-                "- `/ping` - Kiểm tra bot còn hoạt động\n"
-                "- `/help` - Hiển thị hướng dẫn\n\n"
-                "### **Trò chơi Nối Từ**\n"
-                f"- `{prefix}chainstart [en|vi]` hoặc `/chainstart` - Bắt đầu trò chơi\n"
-                f"- `{prefix}chainstop` hoặc `/chainstop` - Dừng trò chơi\n"
-                f"- `{prefix}chainstatus` hoặc `/chainstatus` - Xem trạng thái trò chơi\n"
-                f"- `{prefix}goiy` hoặc `/chainhint` - Gợi ý từ tiếp theo (5 lần/ngày, `/chainhint` chỉ mình bạn thấy)\n"
-                f"- Nút ⏭️ **Bỏ qua**, `{prefix}boqua` hoặc `/chainskip` - Bỏ phiếu bỏ qua từ khó, cần 2 người\n"
-                f"- `{prefix}hoso [người]` hoặc `/chainme` - Xem hồ sơ nối từ\n"
-                f"- `{prefix}bxh` hoặc `/chainrank` - Bảng xếp hạng top 20\n"
-                f"- `{prefix}kiemtra <từ>` hoặc `/chaincheck` - Kiểm tra từ có trong từ điển\n"
-                f"- `{prefix}them-tu <từ>` / `{prefix}xoa-tu <từ>` - Thêm/xoá từ tiếng Anh hoặc tiếng Việt (quản trị)\n\n"
-                "### **Cách chơi (Tiếng Việt)**\n"
-                f"1. Dùng `{prefix}chainstart vi` hoặc `/chainstart`\n"
-                "2. Bot đưa ra một từ gồm 2 âm tiết, ví dụ `học sinh`\n"
-                "3. Người chơi gửi một từ 2 âm tiết bắt đầu bằng âm tiết cuối (đúng cả dấu): `sinh viên` → `viên chức`\n"
-                "4. Ai nối đến từ mà **không còn từ nào nối tiếp được** sẽ thắng 🏆, bot tự mở lượt mới\n\n"
-                "### **Cách chơi (Tiếng Anh)**\n"
-                "- Gửi MỘT từ (3+ chữ cái) bắt đầu bằng chữ cái cuối của từ trước: `apple` → `egg` → `goat`\n"
-                "- Tin nhắn có dấu cách bị bỏ qua\n\n"
-                "### **Quy tắc**\n"
-                "- Từ phải có trong từ điển và chưa được dùng trong lượt chơi\n"
-                "- Chấp nhận cả hai kiểu bỏ dấu: `hoà`/`hòa`, `thuỷ`/`thủy`, và cả i/y: `mỹ`/`mĩ`, `kỳ`/`kì`\n"
-                "- Mỗi người chơi có cooldown 5 giây giữa hai lần trả lời hợp lệ\n"
-                "- Tin nhắn không phải từ 2 âm tiết được coi là trò chuyện và bị bỏ qua (Tiếng Việt)\n"
-                "- Chỉ được chạy 1 trò chơi nối từ tại một thời điểm\n"
-                "- Bot thả ✅ khi đúng, ❌ khi sai, ⏳ khi đang trong cooldown\n\n"
-                "-# Nguồn từ điển: Hồ Ngọc Đức (vietnamese-wordlist) · dữ liệu từ điển của @minhqnd, "
-                "<https://dict.minhqnd.com> (CC BY-SA 4.0) · ENABLE (public domain)"
-            )
-
-        return (
-            "## **HQS Bot Help**\n"
-            "> **Configured language:** `English (en)`\n\n"
-            "### **General**\n"
-            f"- `{prefix}help` - Show this help message\n"
-            f"- `{prefix}hello` - Quick hello response\n"
-            "- `/ping` - Check if the bot is alive\n"
-            "- `/help` - Show this help message\n\n"
-            "### **Word-chain Game**\n"
-            f"- `{prefix}chainstart [en|vi]` or `/chainstart` - Start a new game\n"
-            f"- `{prefix}chainstop` or `/chainstop` - Stop the current game\n"
-            f"- `{prefix}chainstatus` or `/chainstatus` - Show game status\n"
-            f"- `{prefix}chainhint` or `/chainhint` - Hint for the next word (5 per day)\n"
-            f"- ⏭️ **Skip** button, `{prefix}chainskip` or `/chainskip` - Vote to skip a stuck word (2 votes)\n"
-            f"- `{prefix}chainme [member]` or `/chainme` - Show a word-chain profile\n"
-            f"- `{prefix}chainrank` or `/chainrank` - Top 20 leaderboard\n"
-            f"- `{prefix}chaincheck <word>` or `/chaincheck` - Check a word against the dictionary\n"
-            f"- `{prefix}chainadd <word>` / `{prefix}chainremove <word>` - Edit the dictionary (admin)\n\n"
-            "### **How To Play (English)**\n"
-            f"1. Run `{prefix}chainstart [en|vi]` or `/chainstart`\n"
-            "2. Bot gives a random starter word, e.g. `apple`\n"
-            "3. Send ONE word (3+ letters) starting with the LAST LETTER of the previous one: `apple` -> `egg` -> `goat`\n"
-            "4. Messages with spaces are ignored. If nothing can follow, you win 🏆 and a new round starts\n\n"
-            "### **How To Play (Vietnamese)**\n"
-            "- Each answer is exactly 2 syllables and starts with the last syllable (same tone): `học sinh` -> `sinh viên`\n"
-            "- Whoever plays a word that **nobody can continue** wins 🏆 and a new round starts\n\n"
-            "### **Rules**\n"
-            "- Start with the last letter (English) or last syllable (Vietnamese) of the previous word\n"
-            "- Words must be in the dictionary and can't be reused\n"
-            "- Cooldown: 5 seconds between accepted answers per user\n"
-            "- Only one word-chain game can run at a time\n"
-            "- The bot reacts ✅ for correct, ❌ for wrong, ⏳ while you're on cooldown\n\n"
-            "-# English dictionary: ENABLE (public domain) · "
-            "Vietnamese dictionary: Hồ Ngọc Đức (vietnamese-wordlist) · dictionary data by @minhqnd, "
-            "<https://dict.minhqnd.com> (CC BY-SA 4.0)"
-        )
 
     @bot.event
     async def on_ready() -> None:
@@ -236,7 +253,7 @@ def build_bot() -> tuple[commands.Bot, str]:
 
     @bot.tree.command(name="help", description="Show bot help and instructions")
     async def slash_help(interaction: discord.Interaction) -> None:
-        await interaction.response.send_message(build_help_text())
+        await interaction.response.send_message(build_help_text(config.command_prefix, config.bot_language))
 
     @bot.command(name="hello")
     async def hello(ctx: commands.Context) -> None:
@@ -244,7 +261,7 @@ def build_bot() -> tuple[commands.Bot, str]:
 
     @bot.command(name="help")
     async def help_command(ctx: commands.Context) -> None:
-        await ctx.send(build_help_text())
+        await ctx.send(build_help_text(config.command_prefix, config.bot_language))
 
     @bot.command(name="chainstart")
     async def chain_start(ctx: commands.Context, language: str | None = None) -> None:
@@ -356,13 +373,24 @@ def build_bot() -> tuple[commands.Bot, str]:
         await interaction.response.send_message(word_chain.player_profile(target.id, target.display_name))
 
     @bot.command(name="chainrank", aliases=["chaintop", "bxh"])
-    async def chain_rank(ctx: commands.Context) -> None:
-        await ctx.send(word_chain.leaderboard(), allowed_mentions=discord.AllowedMentions.none())
+    async def chain_rank(ctx: commands.Context, *, language: str | None = None) -> None:
+        await ctx.send(word_chain.leaderboard(language), allowed_mentions=discord.AllowedMentions.none())
 
-    @bot.tree.command(name="chainrank", description="Show the word-chain top 20 leaderboard")
-    async def slash_chain_rank(interaction: discord.Interaction) -> None:
+    @bot.tree.command(name="chainrank", description="Show the word-chain top 20 leaderboard for one language")
+    @app_commands.describe(language="Optional language (default: the running game's language, else the bot language)")
+    @app_commands.choices(
+        language=[
+            app_commands.Choice(name="English", value="en"),
+            app_commands.Choice(name="Vietnamese", value="vi"),
+        ]
+    )
+    async def slash_chain_rank(
+        interaction: discord.Interaction,
+        language: app_commands.Choice[str] | None = None,
+    ) -> None:
+        selected_language = language.value if language is not None else None
         await interaction.response.send_message(
-            word_chain.leaderboard(), allowed_mentions=discord.AllowedMentions.none()
+            word_chain.leaderboard(selected_language), allowed_mentions=discord.AllowedMentions.none()
         )
 
     @bot.command(name="chaincheck", aliases=["kiemtra"])
@@ -421,21 +449,24 @@ def build_bot() -> tuple[commands.Bot, str]:
         if result is None:
             return
 
+        await safe_react(message, reaction_for(result.status))
         if result.status == PhraseStatus.OK:
-            await safe_react(message, "✅")
             return
 
         if result.status == PhraseStatus.WIN:
-            await safe_react(message, "✅")
-            await message.channel.send(result.message, **skip_button_kwargs(message.channel.id))
+            await message.channel.send(
+                result.message,
+                allowed_mentions=discord.AllowedMentions.none(),  # a display name can't ping @everyone
+                **skip_button_kwargs(message.channel.id),
+            )
             return
 
-        await safe_react(message, "⏳" if result.status == PhraseStatus.COOLDOWN else "❌")
         try:
             await message.reply(
                 result.message,
-                delete_after=ERROR_REPLY_DELETE_AFTER,
+                delete_after=reply_delete_after(result.status),
                 mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
             )
         except discord.HTTPException:
             pass

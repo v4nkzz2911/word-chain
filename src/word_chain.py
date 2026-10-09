@@ -15,6 +15,7 @@ from en_dictionary import (
     MIN_EXPECTED_WORDS,
     EnglishDictionary,
     ensure_en_wordlist,
+    is_offensive,
 )
 from en_text import last_letter, mask_en_word, parse_en_word
 from storage import GameStore
@@ -87,6 +88,7 @@ class PhraseStatus:
     WRONG_START = "wrong_start"  # does not start with the expected word
     NOT_IN_DICT = "not_in_dict"  # unknown word(s)
     USED = "used"                # already used in this game
+    BANNED = "banned"            # offensive word: refused with a warning (English games only)
 
 
 class SkipStatus:
@@ -341,9 +343,10 @@ class WordChainGameManager:
         else:
             self._store.save_game(self._active_channel_id, self._active_game.to_json())
 
-    def _bump(self, user_id: int, stat: str) -> None:
+    def _bump(self, user_id: int, stat: str, language: str) -> None:
+        """Count a stat for the game language: English and Vietnamese stats are separate."""
         if self._store is not None:
-            self._store.bump(user_id, stat)
+            self._store.bump(user_id, stat, language)
 
     def _round_intro(self, game: WordChainState, title: str) -> str:
         language_label = self._label_for_language(game.language)
@@ -392,6 +395,12 @@ class WordChainGameManager:
             "> Không tải được danh sách từ. Hãy kiểm tra log của bot và khởi động lại bot.",
         )
 
+    def _unsupported_language_message(self) -> str:
+        return self._tr(
+            "❌ **Unsupported language**\n> Use `en` (English) or `vi` (Vietnamese).",
+            "❌ **Ngôn ngữ không hỗ trợ**\n> Hãy dùng `en` (Tiếng Anh) hoặc `vi` (Tiếng Việt).",
+        )
+
     def start_game(self, channel_id: int, language: str | None = None) -> tuple[bool, str]:
         if self._active_game is not None:
             return False, self._tr(
@@ -401,10 +410,7 @@ class WordChainGameManager:
 
         normalized_language = self.normalize_language(language)
         if language is not None and normalized_language is None:
-            return False, self._tr(
-                "❌ **Unsupported language**\n> Use `en` (English) or `vi` (Vietnamese).",
-                "❌ **Ngôn ngữ không hỗ trợ**\n> Hãy dùng `en` (Tiếng Anh) hoặc `vi` (Tiếng Việt).",
-            )
+            return False, self._unsupported_language_message()
         selected_language = normalized_language or self._default_language
         if selected_language == "en" and not len(self._en_dictionary):
             return False, self._en_unavailable_message()
@@ -706,7 +712,7 @@ class WordChainGameManager:
         game.turns += 1
         self._last_answer_at[key] = now
         self._skip_votes.clear()  # the chain moved on, so earlier skip votes no longer apply
-        self._bump(user_id, "correct")
+        self._bump(user_id, "correct", game.language)
 
     def handle_player_phrase(
         self,
@@ -729,8 +735,9 @@ class WordChainGameManager:
             PhraseStatus.WRONG_START,
             PhraseStatus.NOT_IN_DICT,
             PhraseStatus.USED,
+            PhraseStatus.BANNED,
         ):
-            self._bump(user_id, "wrong")
+            self._bump(user_id, "wrong", game.language)
         if result is not None and result.accepted:
             self._save()
         return result
@@ -791,7 +798,7 @@ class WordChainGameManager:
             )
 
         # Dead end: nobody can continue -> this player wins and a new round starts.
-        self._bump(user_id, "wins")
+        self._bump(user_id, "wins", game.language)
         win_text = self._tr(
             f"🏆 **{user_name} wins with `{display}`!**\n"
             f"> No word starts with `{last_word}` anymore.\n"
@@ -827,6 +834,19 @@ class WordChainGameManager:
         word = parse_en_word(text)
         if word is None or not len(self._en_dictionary):
             return None
+
+        # Offensive words are refused before any other check: the chain, the used list and
+        # the player's cooldown stay as they are.
+        if is_offensive(word):
+            return PhraseResult(
+                PhraseStatus.BANNED,
+                self._tr(
+                    f"⚠️ **Warning, {user_name}: that word is not allowed**\n"
+                    "> Offensive words are banned in this game. Please keep the chat friendly.",
+                    f"⚠️ **Cảnh báo {user_name}: từ này không được phép dùng**\n"
+                    "> Từ ngữ xúc phạm bị cấm trong trò chơi. Hãy giữ không khí thân thiện nhé.",
+                ),
+            )
 
         now = time.monotonic()
         key = (channel_id, user_id)
@@ -869,7 +889,7 @@ class WordChainGameManager:
             )
 
         # Dead end: nobody can continue -> this player wins and a new round starts.
-        self._bump(user_id, "wins")
+        self._bump(user_id, "wins", game.language)
         win_text = self._tr(
             f"🏆 **{user_name} wins with `{word}`!**\n"
             f"> No unused word starts with the letter `{last}`.\n"
@@ -895,21 +915,31 @@ class WordChainGameManager:
 
     # ---------- stats ----------
     def player_profile(self, user_id: int, user_name: str) -> str:
+        """Profile with one section per language (the default language first)."""
         if self._store is None:
             return self._tr("❌ **Stats are not available**", "❌ **Không có dữ liệu thống kê**")
-        player = self._store.get_player(user_id)
+        header = self._tr(
+            f"👤 **Word-chain profile of {user_name}**",
+            f"👤 **Hồ sơ nối từ của {user_name}**",
+        )
+        languages = sorted(LANGUAGE_LABELS, key=lambda lang: lang != self._default_language)
+        return "\n".join([header] + [self._profile_section(user_id, lang) for lang in languages])
+
+    def _profile_section(self, user_id: int, language: str) -> str:
+        title = f"🌐 **{self._label_for_language(language)}**"
+        player = self._store.get_player(user_id, language)
+        if not (player["correct"] or player["wrong"] or player["wins"]):
+            return title + "\n" + self._tr("> No games yet", "> Chưa chơi")
         total = player["correct"] + player["wrong"]
         accuracy = f"{player['correct'] / total:.0%}" if total else "—"
-        rank = self._store.rank_of(user_id)
+        rank = self._store.rank_of(user_id, language)
         rank_text = f"#{rank}" if rank else self._tr("Unranked", "Chưa xếp hạng")
-        return self._tr(
-            f"👤 **Word-chain profile of {user_name}**\n"
+        return title + "\n" + self._tr(
             f"> 🏆 **Wins:** `{player['wins']}`\n"
             f"> ✅ **Correct:** `{player['correct']}`\n"
             f"> ❌ **Wrong:** `{player['wrong']}`\n"
             f"> 🎯 **Accuracy:** `{accuracy}`\n"
             f"> 📊 **Rank:** `{rank_text}`",
-            f"👤 **Hồ sơ nối từ của {user_name}**\n"
             f"> 🏆 **Thắng:** `{player['wins']}`\n"
             f"> ✅ **Từ đúng:** `{player['correct']}`\n"
             f"> ❌ **Từ sai:** `{player['wrong']}`\n"
@@ -917,12 +947,20 @@ class WordChainGameManager:
             f"> 📊 **Hạng:** `{rank_text}`",
         )
 
-    def leaderboard(self, limit: int = 20) -> str:
-        rows = self._store.top(limit) if self._store is not None else []
+    def leaderboard(self, language: str | None = None, limit: int = 20) -> str:
+        """Top players of one language: the given one, else the running game's, else the default."""
+        if language is not None:
+            selected = self.normalize_language(language)
+            if selected is None:
+                return self._unsupported_language_message()
+        else:
+            selected = self._active_game.language if self._active_game is not None else self._default_language
+        label = self._label_for_language(selected)
+        rows = self._store.top(selected, limit) if self._store is not None else []
         if not rows:
             return self._tr(
-                "📭 **Nobody has played yet**\n> Start a game and be the first!",
-                "📭 **Chưa có ai chơi**\n> Hãy bắt đầu trò chơi và là người đầu tiên!",
+                f"📭 **No {label} games played yet**\n> Start a game and be the first!",
+                f"📭 **Chưa có ai chơi nối từ {label}**\n> Hãy bắt đầu trò chơi và là người đầu tiên!",
             )
         medals = {1: "🥇", 2: "🥈", 3: "🥉"}
         lines = [
@@ -933,7 +971,10 @@ class WordChainGameManager:
             )
             for i, row in enumerate(rows, 1)
         ]
-        return self._tr("🏅 **Word-chain leaderboard**\n", "🏅 **Bảng xếp hạng nối từ**\n") + "\n".join(lines)
+        return self._tr(
+            f"🏅 **Word-chain leaderboard: {label}**\n",
+            f"🏅 **Bảng xếp hạng nối từ: {label}**\n",
+        ) + "\n".join(lines)
 
     # ---------- dictionary tools ----------
     def check_word(self, text: str, language: str | None = None) -> tuple[bool, str]:
@@ -974,6 +1015,8 @@ class WordChainGameManager:
             )
         if not len(self._en_dictionary):
             return False, self._en_unavailable_message()
+        if is_offensive(word):
+            return False, self._tr(f"🚫 **{word}** is banned in games.", f"🚫 **{word}** bị cấm trong trò chơi.")
         if word not in self._en_dictionary:
             return False, self._tr(
                 f"❌ **{word}** is not in the dictionary.",
@@ -996,6 +1039,11 @@ class WordChainGameManager:
     def _add_english_word(self, word: str, user_id: int) -> tuple[bool, str]:
         if not len(self._en_dictionary):
             return False, self._en_unavailable_message()
+        if is_offensive(word):
+            return False, self._tr(
+                f"❌ **{word}** is on the banned word list and can't be added.",
+                f"❌ **{word}** nằm trong danh sách từ cấm nên không thể thêm.",
+            )
         if word in self._en_dictionary:
             return False, self._tr(
                 f"ℹ️ **{word}** is already in the dictionary.",

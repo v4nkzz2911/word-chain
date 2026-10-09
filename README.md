@@ -47,8 +47,8 @@ python src/bot.py
   `/chainskip` / `<prefix>chainskip` (alias `<prefix>boqua`, `<prefix>skip`).
   When 2 different players vote, the bot reveals a possible answer and starts a new round (nobody wins).
   Votes reset when someone answers correctly.
-- Player profile: `/chainme [member]` or `<prefix>chainme [member]` (alias `<prefix>hoso`)
-- Top 20 leaderboard: `/chainrank` or `<prefix>chainrank` (alias `<prefix>bxh`)
+- Player profile: `/chainme [member]` or `<prefix>chainme [member]` (alias `<prefix>hoso`). Shows English and Vietnamese stats separately, each with its own rank.
+- Top 20 leaderboard, one per language: `/chainrank [language]` or `<prefix>chainrank [en|vi]` (aliases `<prefix>chaintop`, `<prefix>bxh`). Without a language it shows the running game's language, otherwise `DISCORD_BOT_LANGUAGE`.
 - Check a word: `/chaincheck <word>` or `<prefix>chaincheck <word>` (alias `<prefix>kiemtra`)
 - Add / remove a word (Manage Server permission): `/chainadd <word>`, `/chainremove <word>`
   (aliases `<prefix>them-tu` / `<prefix>themtu`, `<prefix>xoa-tu` / `<prefix>xoatu`).
@@ -65,8 +65,9 @@ Vietnamese aliases work only with the prefix; slash commands keep their English 
 - You can force language when starting: `!chainstart en` or `!chainstart vi`.
 - If you do not pass a language, the game uses `DISCORD_BOT_LANGUAGE`.
 - Players can answer several times in a row, but each user has a 5-second cooldown between accepted answers.
-- The bot reacts ✅ (correct), ❌ (wrong) or ⏳ (still on cooldown); error replies delete themselves after 6 seconds.
+- The bot reacts ✅ (correct), ❌ (wrong), ⏳ (still on cooldown) or ⚠️ (offensive word, English games); error replies delete themselves after 6 seconds, but the ⚠️ warning stays.
 - The active game and player stats are saved in `data/word_chain.db`, so a restart does not lose them.
+- Stats (correct, wrong, wins) and ranks are kept separately for English and Vietnamese; the daily hint limit is shared. On the first start after this update, stats from older versions are copied once into the Vietnamese stats; the old `players` table is left untouched.
 
 ### Vietnamese (`vi`)
 
@@ -95,6 +96,11 @@ Vietnamese aliases work only with the prefix; slash commands keep their English 
 - Markdown, trailing punctuation, capitals and accents are ignored: `**Apple!**` → `apple`, `café` → `cafe`.
 - Messages with spaces, apostrophes, hyphens or digits (`don't`, `x-ray`, `abc1`, `hello there`) are treated
   as chat and ignored.
+- Offensive words (slurs, swear words, sexual terms and their common forms) are banned. The bot reacts ⚠️
+  and posts a warning to the player that is not auto-deleted. The word is not accepted, the chain does not
+  move, the player's cooldown is not used, and it counts as a wrong answer in the English stats.
+  `/chaincheck` reports such words as banned and `/chainadd` refuses them. Some harmless words that share
+  a stem are refused too (e.g. `hell`, `cocked`, `craps`, `niggle`).
 - Words are checked against the [ENABLE](https://github.com/dolph/dictionary) word list (~172,800 words,
   public domain), downloaded once to `data/words_en_enable.txt` on first run.
   Extra words can be added in `data/extra_words_en.txt` (one per line) or with `/chainadd`.

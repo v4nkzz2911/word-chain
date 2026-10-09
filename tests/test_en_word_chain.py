@@ -163,7 +163,7 @@ class GameplayTests(BaseCase):
         self.assertEqual(game.expected_start_word, "g")
         self.assertEqual(game.turns, 1)
         self.assertEqual(game.used["egg"], "Bob")
-        self.assertEqual(self.store.get_player(1)["correct"], 1)
+        self.assertEqual(self.store.get_player(1, "en")["correct"], 1)
         saved = json.loads(self.store.load_game()[1])
         self.assertIn("egg", saved["used"])
         self.assertEqual(saved["expected_start_key"], "g")
@@ -173,7 +173,7 @@ class GameplayTests(BaseCase):
         self.assertEqual(self.play("egg").status, PhraseStatus.OK)
         result = self.play("goat")
         self.assertEqual(result.status, PhraseStatus.COOLDOWN)
-        self.assertEqual(self.store.get_player(1)["wrong"], 0)
+        self.assertEqual(self.store.get_player(1, "en")["wrong"], 0)
         self.assertEqual(self.play("goat", user_id=2, name="Ann").status, PhraseStatus.OK)
 
     def test_03_wrong_start(self):
@@ -182,14 +182,14 @@ class GameplayTests(BaseCase):
         self.assertEqual(result.status, PhraseStatus.WRONG_START)
         self.assertIn("Wrong first letter", result.message)
         self.assertIn("`g`", result.message)
-        self.assertEqual(self.store.get_player(1)["wrong"], 1)
+        self.assertEqual(self.store.get_player(1, "en")["wrong"], 1)
 
     def test_04_not_in_dict(self):
         self.set_en_state("g", "egg")
         result = self.play("gxyzq")
         self.assertEqual(result.status, PhraseStatus.NOT_IN_DICT)
         self.assertIn("**gxyzq**", result.message)
-        self.assertEqual(self.store.get_player(1)["wrong"], 1)
+        self.assertEqual(self.store.get_player(1, "en")["wrong"], 1)
 
     def test_05_used(self):
         self.set_en_state("e", "apple", {"apple": None, "egg": "Bob"})
@@ -201,14 +201,15 @@ class GameplayTests(BaseCase):
         result = self.play("apple")
         self.assertEqual(result.status, PhraseStatus.USED)
         self.assertIn("It was the starter word", result.message)
-        self.assertEqual(self.store.get_player(1)["wrong"], 1)
+        self.assertEqual(self.store.get_player(1, "en")["wrong"], 1)
 
     def test_06_chat_ignored(self):
         self.set_en_state()
         for text in ("hello there", "ok", "!chainstatus", "don't", "egg 2"):
             with self.subTest(text=text):
                 self.assertIsNone(self.play(text))
-        self.assertEqual(self.store.get_player(1), {"correct": 0, "wrong": 0, "wins": 0})
+        self.assertEqual(self.store.get_player(1, "en"), {"correct": 0, "wrong": 0, "wins": 0})
+        self.assertEqual(self.store.get_player(1, "vi"), {"correct": 0, "wrong": 0, "wins": 0})
         self.assertEqual(self.mgr._active_game.turns, 0)
 
     def test_07_markdown_answer(self):
@@ -228,8 +229,8 @@ class GameplayTests(BaseCase):
         self.assertEqual(result.status, PhraseStatus.WIN)
         self.assertIn("🏆", result.message)
         self.assertIn("Ann wins with `kiwi`", result.message)
-        self.assertEqual(self.store.get_player(2)["wins"], 1)
-        self.assertEqual(self.store.get_player(2)["correct"], 1)
+        self.assertEqual(self.store.get_player(2, "en")["wins"], 1)
+        self.assertEqual(self.store.get_player(2, "en")["correct"], 1)
         # No starter word in this tiny dictionary: the game ends.
         self.assertFalse(self.mgr.has_game(CH))
         self.assertIsNone(self.store.load_game())
@@ -665,11 +666,248 @@ class OffensiveWordTests(BaseCase):
         ok, message = self.mgr.stop_game(CH)
         self.assertNotIn("Could have continued", message)
 
-    def test_players_may_still_play_them(self):
+    def test_players_cannot_play_them(self):
         en = make_en(EN_WORDS + ["shit"])
         self.mgr = self.make_manager(self.store, en, self.vi)
         self.set_en_state("s", "bus", {"bus": None})
-        self.assertTrue(self.play("shit").accepted)
+        result = self.play("shit")
+        self.assertEqual(result.status, PhraseStatus.BANNED)
+        self.assertFalse(result.accepted)
+        self.assertNotIn("shit", self.mgr._active_game.used)
+
+
+BANNED_WARNING_EN = (
+    "⚠️ **Warning, Bob: that word is not allowed**\n"
+    "> Offensive words are banned in this game. Please keep the chat friendly."
+)
+BANNED_WARNING_VI = (
+    "⚠️ **Cảnh báo Bob: từ này không được phép dùng**\n"
+    "> Từ ngữ xúc phạm bị cấm trong trò chơi. Hãy giữ không khí thân thiện nhé."
+)
+COLLATERAL_BANNED = [
+    "fucking", "shitty", "niggle", "pussycat", "bitches", "raped", "raping", "cocked", "dyked",
+    "craps", "asses", "sexes", "hell", "hells", "squaw", "jewed",
+]
+# "jew"/"jews" are neutral words for a people, not slurs: they must stay playable.
+NOT_BANNED = ["cocktail", "dictionary", "hello", "spiced", "title", "jew", "jews"]
+
+
+class OffensiveGameplayTests(BaseCase):
+    """Offensive words are refused in English games with a warning; nothing else changes."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.en = make_en(EN_WORDS + ["shit", "dick", "hell", "cocktail", "dictionary", "hello", "spiced", "gook"])
+        self.mgr = self.make_manager(self.store, self.en, self.vi)
+        self.set_en_state("e", "apple")
+
+    def warning(self) -> str:
+        return BANNED_WARNING_VI if self.ui == "vi" else BANNED_WARNING_EN
+
+    def test_banned_message(self):
+        result = self.play("**Fuck!**")
+        self.assertEqual(result.status, PhraseStatus.BANNED)
+        self.assertEqual(result.message, self.warning())
+        self.assertNotIn("fuck", result.message.lower())
+        self.assertFalse(result.accepted)
+        self.assertEqual(self.play("Fück").status, PhraseStatus.BANNED)
+
+    def test_banned_before_wrong_start(self):
+        self.assertEqual(self.play("shit").status, PhraseStatus.BANNED)  # letter is e
+
+    def test_banned_before_not_in_dict(self):
+        self.assertNotIn("fucking", self.en)
+        self.assertEqual(self.play("fucking").status, PhraseStatus.BANNED)
+
+    def test_banned_before_used(self):
+        self.set_en_state("d", "bed", {"bed": None, "dick": "Ann"})
+        self.assertEqual(self.play("dick").status, PhraseStatus.BANNED)
+
+    def test_banned_before_cooldown_and_cooldown_untouched(self):
+        self.assertEqual(self.play("egg").status, PhraseStatus.OK)
+        stamp = self.mgr._last_answer_at[(CH, 1)]
+        self.assertEqual(self.play("gook").status, PhraseStatus.BANNED)
+        self.assertEqual(self.mgr._last_answer_at[(CH, 1)], stamp)
+        self.assertEqual(self.play("goat").status, PhraseStatus.COOLDOWN)
+
+    def test_banned_word_forms(self):
+        for word in COLLATERAL_BANNED:
+            with self.subTest(word=word):
+                self.set_en_state(word[0], "x" + word[0], {"x" + word[0]: None})
+                self.assertEqual(self.play(word).status, PhraseStatus.BANNED)
+        for word in NOT_BANNED:
+            with self.subTest(word=word):
+                self.set_en_state(word[0], "x" + word[0], {"x" + word[0]: None})
+                self.mgr._last_answer_at.clear()
+                self.assertNotEqual(self.play(word).status, PhraseStatus.BANNED)
+
+    def test_counts_as_wrong(self):
+        self.play("shit")
+        self.assertEqual(self.store.get_player(1, "en"), {"correct": 0, "wrong": 1, "wins": 0})
+        self.assertEqual(self.store.get_player(1, "vi"), {"correct": 0, "wrong": 0, "wins": 0})
+
+    def test_state_unchanged(self):
+        self.assertEqual(self.mgr.vote_skip(CH, 3, "Cy")[0], SkipStatus.VOTED)
+        game = self.mgr._active_game
+        before_json = game.to_json()
+        before_saved = self.store.load_game()
+        self.assertEqual(self.play("hell").status, PhraseStatus.BANNED)
+        self.assertIs(self.mgr._active_game, game)
+        self.assertEqual(game.to_json(), before_json)
+        self.assertEqual(game.turns, 0)
+        self.assertEqual(game.used, {"apple": None})
+        self.assertEqual(game.current_phrase, "apple")
+        self.assertIsNone(game.last_player_id)
+        self.assertEqual(self.store.load_game(), before_saved)
+        self.assertEqual(self.mgr._skip_votes, {3})
+        self.assertEqual(self.mgr._last_answer_at, {})
+
+    def test_can_answer_right_after(self):
+        self.assertEqual(self.play("shit").status, PhraseStatus.BANNED)
+        self.assertEqual(self.play("egg").status, PhraseStatus.OK)
+        self.assertEqual(self.store.get_player(1, "en"), {"correct": 1, "wrong": 1, "wins": 0})
+
+    def test_warning_names_the_player(self):
+        message = self.play("shit", 2, "Ann").message
+        self.assertIn("Ann", message)
+        if self.ui == "en":
+            self.assertIn("Warning, Ann:", message)
+        else:
+            self.assertIn("Cảnh báo Ann:", message)
+
+    def test_chat_with_offensive_word_ignored(self):
+        self.assertIsNone(self.play("fuck you"))
+        self.assertEqual(self.store.get_player(1, "en")["wrong"], 0)
+
+    # ---------- /chaincheck
+    def test_check_word_banned(self):
+        if self.ui == "vi":
+            self.assertEqual(self.mgr.check_word("shit"), (False, "🚫 **shit** bị cấm trong trò chơi."))
+            return
+        self.assertEqual(self.mgr.check_word("fuck"), (False, "🚫 **fuck** is banned in games."))
+        self.assertEqual(self.mgr.check_word("Shit!"), (False, "🚫 **shit** is banned in games."))
+        self.assertEqual(self.mgr.check_word("shit", "en"), (False, "🚫 **shit** is banned in games."))
+
+    def test_check_word_during_vietnamese_game(self):
+        self.set_vi_state()
+        expected = "🚫 **hell** bị cấm trong trò chơi." if self.ui == "vi" else "🚫 **hell** is banned in games."
+        self.assertEqual(self.mgr.check_word("hell"), (False, expected))
+        self.assertIn(
+            "2 âm tiết" if self.ui == "vi" else "exactly 2 syllables", self.mgr.check_word("hell", "vi")[1]
+        )
+
+    def test_check_word_clean_and_unavailable(self):
+        ok, message = self.mgr.check_word("cocktail")
+        self.assertTrue(ok)
+        self.assertIn("**cocktail**", message)
+        self.mgr = self.make_manager(self.store, EnglishDictionary(), self.vi)
+        self.assertEqual(self.mgr.check_word("fuck"), (False, self.mgr._en_unavailable_message()))
+
+    # ---------- /chainadd, /chainremove
+    def test_add_banned_word_refused(self):
+        expected = (
+            "❌ **fuckwit** nằm trong danh sách từ cấm nên không thể thêm."
+            if self.ui == "vi"
+            else "❌ **fuckwit** is on the banned word list and can't be added."
+        )
+        self.assertEqual(self.mgr.add_word("fuckwit", 9), (False, expected))
+        self.assertNotIn("fuckwit", self.en)
+        self.assertEqual(self.store.custom_words(), [])
+
+    def test_add_banned_word_already_in_dictionary(self):
+        if self.ui == "vi":
+            return
+        self.assertEqual(
+            self.mgr.add_word("shit", 9), (False, "❌ **shit** is on the banned word list and can't be added.")
+        )
+        self.assertEqual(
+            self.mgr.add_word("HELL", 9), (False, "❌ **hell** is on the banned word list and can't be added.")
+        )
+        self.assertEqual(self.store.custom_words(), [])
+
+    def test_remove_banned_word_allowed(self):
+        if self.ui == "vi":
+            self.assertEqual(self.mgr.remove_word("shit", 9), (True, "🗑️ Đã xoá **shit** khỏi từ điển tiếng Anh."))
+        else:
+            self.assertEqual(
+                self.mgr.remove_word("shit", 9), (True, "🗑️ Removed **shit** from the English dictionary.")
+            )
+        self.assertIn(("shit", False), self.store.custom_words())
+        self.assertNotIn("shit", self.en)
+
+    def test_add_other_words_unchanged(self):
+        if self.ui == "vi":
+            self.assertEqual(
+                self.mgr.add_word("zyzzyvax", 9), (True, "✅ Đã thêm **zyzzyvax** vào từ điển tiếng Anh.")
+            )
+            self.assertEqual(self.mgr.add_word("bàn ghế", 9), (True, "✅ Đã thêm **bàn ghế** vào từ điển."))
+        else:
+            self.assertEqual(
+                self.mgr.add_word("zyzzyvax", 9), (True, "✅ Added **zyzzyvax** to the English dictionary.")
+            )
+            self.assertEqual(self.mgr.add_word("bàn ghế", 9), (True, "✅ Added **bàn ghế** to the dictionary."))
+
+
+class OffensiveGameplayViUiTests(OffensiveGameplayTests):
+    ui = "vi"
+
+
+ENABLE_COLLATERAL = [
+    "hell", "hells", "cocked", "craps", "niggle", "niggling", "pussycat", "dyked", "asses", "sexes",
+    "squaw", "jewed", "spics", "bastardy", "pricked", "pricking", "pussyfoot", "niggard", "shittah",
+    "shittim", "shitake", "twattle", "negroni", "pissoir", "fagot", "cocking", "craped",
+]
+ENABLE_LOOKALIKES = [
+    "spice", "spiced", "japan", "hello", "shell", "cocktail", "dictionary", "analyze", "rapeseed",
+    "grape", "title", "assess", "class", "therapist", "shiitake", "peninsula", "prickly", "squawk", "jew", "jews", "jewel",
+]
+
+
+class OffensiveEnableTests(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("WORDCHAIN_ENABLE_PATH"), "set WORDCHAIN_ENABLE_PATH to the ENABLE file")
+    def test_collateral_and_lookalikes_in_enable(self):
+        from en_dictionary import is_offensive
+
+        en = EnglishDictionary()
+        en.load_file(Path(os.environ["WORDCHAIN_ENABLE_PATH"]))
+        for word in ENABLE_COLLATERAL:
+            with self.subTest(word=word):
+                self.assertIn(word, en)
+                self.assertTrue(is_offensive(word))
+        for word in ENABLE_LOOKALIKES:
+            with self.subTest(word=word):
+                self.assertFalse(is_offensive(word))
+
+
+class NotShownByBotTests(unittest.TestCase):
+    """'jew'/'jews' are playable but the bot never picks them as starters, hints or answers."""
+
+    def test_playable_but_never_picked(self):
+        en = make_en(["jew", "jews", "jewel", "jeweler", "egg", "seed", "tiger", "rabbit"])
+        self.assertEqual(en.start_pool_size, len(en._start_pool))
+        self.assertNotIn("jew", en._start_pool)
+        self.assertNotIn("jews", en._start_pool)
+        for _ in range(200):
+            self.assertIn(en.example("j"), {"jewel", "jeweler"})
+        self.assertIsNone(en.example("j", {"jewel", "jeweler"}))
+
+        mgr = WordChainGameManager(store=GameStore(":memory:"), en_dictionary=en, vi_dictionary=make_vi())
+        mgr._active_channel_id = CH
+        mgr._active_game = WordChainState(
+            current_phrase="egg", expected_start_word="j", language="en",
+            expected_start_key="j", used={"egg": None},
+        )
+        self.assertEqual(mgr.handle_player_phrase(CH, 1, "Bob", "jews").status, PhraseStatus.OK)
+
+    @unittest.skipUnless(os.environ.get("WORDCHAIN_ENABLE_PATH"), "set WORDCHAIN_ENABLE_PATH to the ENABLE file")
+    def test_real_enable_never_picks_them(self):
+        en = EnglishDictionary()
+        en.load_file(Path(os.environ["WORDCHAIN_ENABLE_PATH"]))
+        en.build_indexes()
+        for word in ("jew", "jews"):
+            self.assertIn(word, en)
+            self.assertNotIn(word, en._start_pool)
+            self.assertNotIn(word, en._common_by_first["j"])
 
 
 # ---------------------------------------------------------------- loading

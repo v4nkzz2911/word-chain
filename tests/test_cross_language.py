@@ -13,7 +13,7 @@ from storage import GameStore  # noqa: E402
 from vi_text import parse_word, syllable_key  # noqa: E402
 from word_chain import PhraseStatus, SkipStatus, WordChainGameManager  # noqa: E402
 
-from test_en_word_chain import CH, make_en, make_vi  # noqa: E402
+from test_en_word_chain import CH, make_en, make_vi, today  # noqa: E402
 
 
 def vi_key(display):
@@ -122,7 +122,8 @@ class CrossLanguageCase(unittest.TestCase):
         for text in ("sinh viên", "học sinh", "chào bạn nhé"):
             self.assertIsNone(self.play(text))
         self.assertEqual(self.mgr._active_game.to_json(), before)
-        self.assertEqual(self.store.get_player(1)["wrong"], 0)
+        self.assertEqual(self.store.get_player(1, "en")["wrong"], 0)
+        self.assertEqual(self.store.get_player(1, "vi")["wrong"], 0)
 
     def test_english_messages_ignored_in_vietnamese_game(self):
         self.force_vi()
@@ -130,7 +131,30 @@ class CrossLanguageCase(unittest.TestCase):
         for text in ("egg", "apple", "**Egg!**", "tiger"):
             self.assertIsNone(self.play(text))
         self.assertEqual(self.mgr._active_game.to_json(), before)
-        self.assertEqual(self.store.get_player(1)["wrong"], 0)
+        self.assertEqual(self.store.get_player(1, "en")["wrong"], 0)
+        self.assertEqual(self.store.get_player(1, "vi")["wrong"], 0)
+
+    def test_offensive_english_words_ignored_in_vietnamese_game(self):
+        self.mgr._en_dictionary = self.en = make_en(
+            ["apple", "egg", "goat", "tiger", "shit", "hell", "dick"]
+        )
+        self.force_vi()
+        before = self.mgr._active_game.to_json()
+        for text in ("fuck", "**Fuck!**", "shit", "hell"):
+            with self.subTest(text=text):
+                self.assertIsNone(self.play(text))
+        self.assertEqual(self.mgr._active_game.to_json(), before)
+        self.assertEqual(self.store.get_player(1, "en")["wrong"], 0)
+        self.assertEqual(self.store.get_player(1, "vi")["wrong"], 0)
+        # A 2-syllable answer containing an English swear word is never BANNED in Vietnamese.
+        result = self.play("sinh hell")
+        self.assertTrue(result is None or result.status != PhraseStatus.BANNED)
+        self.assertEqual(self.play("sinh viên", 2, "Ann").status, PhraseStatus.OK)
+
+    def test_offensive_chat_ignored_in_english_game(self):
+        self.force_en()
+        self.assertIsNone(self.play("fuck you"))
+        self.assertEqual(self.store.get_player(1, "en")["wrong"], 0)
 
     # ------------------------------------------------------------ wins start a round in the same language
     def test_vietnamese_win_starts_vietnamese_round(self):
@@ -207,14 +231,37 @@ class CrossLanguageCase(unittest.TestCase):
         self.assertEqual((g.language, g.expected_start_key), ("vi", syllable_key("viên")))
         self.assertEqual(self.play("viên chức", 2).status, PhraseStatus.OK)
 
-    # ------------------------------------------------------------ shared by design
-    def test_stats_and_hint_limit_are_shared_by_design(self):
+    # ------------------------------------------------------------ stats per language, hints shared
+    def test_stats_are_separate_hint_limit_is_shared(self):
         self.force_en()
         self.play("egg")
+        ok, message = self.mgr.give_hint(CH, 1)
+        self.assertTrue(ok)
+        self.assertIn("4/5", message)
         self.mgr.stop_game(CH)
         self.force_vi()
         self.play("sinh viên")
-        self.assertEqual(self.store.get_player(1)["correct"], 2)
+        ok, message = self.mgr.give_hint(CH, 1)
+        self.assertTrue(ok)
+        self.assertIn("3/5", message)
+        expected = {"correct": 1, "wrong": 0, "wins": 0}
+        self.assertEqual(self.store.get_player(1, "en"), expected)
+        self.assertEqual(self.store.get_player(1, "vi"), expected)
+        self.assertEqual(self.store.hints_used(1, today()), 2)
+
+    def test_wins_count_in_game_language(self):
+        self.mgr._en_dictionary = self.en = make_en(["yak", "kiwi", "tiger", "rabbit", "train", "night"])
+        self.force_en(letter="k", phrase="yak")
+        self.assertEqual(self.play("kiwi", 5).status, PhraseStatus.WIN)
+        self.assertEqual(self.store.get_player(5, "en")["wins"], 1)
+        self.assertEqual(self.store.get_player(5, "vi")["wins"], 0)
+        if self.mgr.has_game(CH):
+            self.mgr.stop_game(CH)
+
+        self.force_vi("viên chức")
+        self.assertEqual(self.play("chức năng", 5).status, PhraseStatus.WIN)
+        self.assertEqual(self.store.get_player(5, "vi")["wins"], 1)
+        self.assertEqual(self.store.get_player(5, "en")["wins"], 1)
 
 
 class CrossLanguageVietnameseUi(CrossLanguageCase):

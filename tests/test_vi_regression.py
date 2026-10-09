@@ -101,7 +101,7 @@ class VietnameseRegressionEnUi(ViBase):
         result = self.play("sinh viên")
         self.assertEqual(result.status, PhraseStatus.OK)
         self.assertEqual(result.message, "✅ **Correct**\n> Next word must start with: `viên`")
-        self.assertEqual(self.store.get_player(1)["correct"], 1)
+        self.assertEqual(self.store.get_player(1, "vi")["correct"], 1)
 
     def test_03_tone_and_iy_variants(self):
         self.set_state("hòa", "hài hòa", {})
@@ -124,14 +124,15 @@ class VietnameseRegressionEnUi(ViBase):
         result = self.play("viên chức")
         self.assertEqual(result.status, PhraseStatus.USED)
         self.assertEqual(result.message, "❌ **This word/phrase was already used before**\n> Used by **Ann**")
-        self.assertEqual(self.store.get_player(1)["wrong"], 3)
+        self.assertEqual(self.store.get_player(1, "vi")["wrong"], 3)
 
     def test_05_non_two_syllable_ignored(self):
         self.set_state()
         for text in ("apple", "viên", "một hai ba", "!chainstatus"):
             with self.subTest(text=text):
                 self.assertIsNone(self.play(text))
-        self.assertEqual(self.store.get_player(1), {"correct": 0, "wrong": 0, "wins": 0})
+        self.assertEqual(self.store.get_player(1, "vi"), {"correct": 0, "wrong": 0, "wins": 0})
+        self.assertEqual(self.store.get_player(1, "en"), {"correct": 0, "wrong": 0, "wins": 0})
 
     def test_06_dead_end_win(self):
         self.set_state("chức", "viên chức")
@@ -148,7 +149,7 @@ class VietnameseRegressionEnUi(ViBase):
         self.assertIn(
             "\n\n🎮 **New round!**\n> **Language:** `Vietnamese`\n> **Starter word:** `học sinh`", result.message
         )
-        self.assertEqual(self.store.get_player(1)["wins"], 1)
+        self.assertEqual(self.store.get_player(1, "vi")["wins"], 1)
 
     def test_07_hint(self):
         self.set_state("lực", "nỗ lực")

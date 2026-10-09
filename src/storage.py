@@ -1,4 +1,4 @@
-"""SQLite storage: active game, player stats and custom dictionary edits."""
+"""SQLite storage: active game, per-language player stats, hints and custom dictionary edits."""
 import sqlite3
 from pathlib import Path
 
@@ -15,6 +15,14 @@ CREATE TABLE IF NOT EXISTS players (
     wrong   INTEGER NOT NULL DEFAULT 0,
     wins    INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS player_stats (
+    user_id  INTEGER NOT NULL,
+    language TEXT NOT NULL,          -- 'en' or 'vi'
+    correct  INTEGER NOT NULL DEFAULT 0,
+    wrong    INTEGER NOT NULL DEFAULT 0,
+    wins     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, language)
+);
 CREATE TABLE IF NOT EXISTS custom_words (
     word    TEXT PRIMARY KEY,
     added   INTEGER NOT NULL,  -- 1 = added, 0 = removed from dictionary
@@ -29,6 +37,8 @@ CREATE TABLE IF NOT EXISTS hint_usage (
 """
 
 _STAT_FIELDS = {"correct", "wrong", "wins"}
+_LANGUAGES = {"en", "vi"}  # game languages with their own stats (kept here: no import of word_chain)
+SCHEMA_VERSION = 1
 
 
 class GameStore:
@@ -39,6 +49,32 @@ class GameStore:
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """v0 -> v1: copy the old combined stats (players) into player_stats as Vietnamese.
+
+        The players table is kept as it was and is no longer written.
+        """
+        if self.conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
+            return
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            if self.conn.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO player_stats (user_id, language, correct, wrong, wins) "
+                    "SELECT user_id, 'vi', correct, wrong, wins FROM players"
+                )
+                self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            self.conn.commit()
+        except BaseException:
+            self.conn.rollback()
+            raise
+
+    @staticmethod
+    def _check_language(language: str) -> None:
+        if language not in _LANGUAGES:
+            raise ValueError(language)
 
     # ---------- active game ----------
     def save_game(self, channel_id: int, state_json: str) -> None:
@@ -58,36 +94,42 @@ class GameStore:
         self.conn.commit()
 
     # ---------- player stats ----------
-    def bump(self, user_id: int, field: str, n: int = 1) -> None:
+    # Each game language ("en" / "vi") has its own stats and ranks.
+    def bump(self, user_id: int, field: str, language: str, n: int = 1) -> None:
         if field not in _STAT_FIELDS:
             raise ValueError(field)
+        self._check_language(language)
         self.conn.execute(
-            f"INSERT INTO players (user_id, {field}) VALUES (?, ?) "
-            f"ON CONFLICT(user_id) DO UPDATE SET {field} = {field} + excluded.{field}",
-            (user_id, n),
+            f"INSERT INTO player_stats (user_id, language, {field}) VALUES (?, ?, ?) "
+            f"ON CONFLICT(user_id, language) DO UPDATE SET {field} = {field} + excluded.{field}",
+            (user_id, language, n),
         )
         self.conn.commit()
 
-    def get_player(self, user_id: int) -> dict[str, int]:
+    def get_player(self, user_id: int, language: str) -> dict[str, int]:
+        self._check_language(language)
         row = self.conn.execute(
-            "SELECT correct, wrong, wins FROM players WHERE user_id = ?", (user_id,)
+            "SELECT correct, wrong, wins FROM player_stats WHERE user_id = ? AND language = ?",
+            (user_id, language),
         ).fetchone()
         return dict(row) if row else {"correct": 0, "wrong": 0, "wins": 0}
 
-    def top(self, limit: int = 20) -> list[sqlite3.Row]:
+    def top(self, language: str, limit: int = 20) -> list[sqlite3.Row]:
+        self._check_language(language)
         return self.conn.execute(
-            "SELECT user_id, correct, wrong, wins FROM players "
+            "SELECT user_id, correct, wrong, wins FROM player_stats WHERE language = ? "
             "ORDER BY wins DESC, correct DESC LIMIT ?",
-            (limit,),
+            (language, limit),
         ).fetchall()
 
-    def rank_of(self, user_id: int) -> int | None:
-        player = self.get_player(user_id)
+    def rank_of(self, user_id: int, language: str) -> int | None:
+        player = self.get_player(user_id, language)
         if not (player["correct"] or player["wins"] or player["wrong"]):
             return None
         row = self.conn.execute(
-            "SELECT COUNT(*) AS n FROM players WHERE wins > ? OR (wins = ? AND correct > ?)",
-            (player["wins"], player["wins"], player["correct"]),
+            "SELECT COUNT(*) AS n FROM player_stats "
+            "WHERE language = ? AND (wins > ? OR (wins = ? AND correct > ?))",
+            (language, player["wins"], player["wins"], player["correct"]),
         ).fetchone()
         return row["n"] + 1
 

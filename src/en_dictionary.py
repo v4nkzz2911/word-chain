@@ -22,9 +22,9 @@ EN_EXTRA_WORDS_FILE = "extra_words_en.txt"  # optional, one word per line
 MIN_EXPECTED_WORDS = 100_000
 DOWNLOAD_TIMEOUT_SECONDS = 60
 
-# ---------- words the bot never shows on its own ----------
-# Players may still play these if they are in the word list; the bot just never picks them
-# as starter words, hints or "could have continued with" answers.
+# ---------- offensive words ----------
+# Offensive words: players cannot play them in English games (the bot warns them instead), and
+# the bot never shows them as starter words, hints or "could have continued with" answers.
 # Any word starting with one of these stems (fucking, shitty, cunts, niggers, ...).
 _OFFENSIVE_PREFIXES = (
     "fuck", "motherfuck", "shit", "cunt", "nigg", "nigra", "negro", "fagg", "whore", "slut",
@@ -57,7 +57,7 @@ def _word_forms(word: str) -> set[str]:
 
 # Exact words only, no generated forms ("spic" + "ed" would be "spiced").
 _OFFENSIVE_EXACT_ONLY = (
-    "spic", "spics", "jap", "japs", "jew", "jews", "jewed", "jewing", "yid", "yids", "wog", "wogs", "squaw", "squaws",
+    "spic", "spics", "jap", "japs", "jewed", "jewing", "yid", "yids", "wog", "wogs", "squaw", "squaws",
     "hell", "hells",
 )
 
@@ -68,6 +68,15 @@ OFFENSIVE_WORDS = frozenset(
 
 def is_offensive(word: str) -> bool:
     return word in OFFENSIVE_WORDS or word.startswith(_OFFENSIVE_PREFIXES)
+
+
+# Playable, but the bot never picks them itself (starters, hints, example answers):
+# ENABLE lists lowercase "jew" mainly for its offensive verb sense.
+_NOT_SHOWN = frozenset({"jew", "jews"})
+
+
+def _hidden_from_bot(word: str) -> bool:
+    return word in _NOT_SHOWN or is_offensive(word)
 
 
 # Common words that are mostly read as names, places or brands: never used as starters.
@@ -151,7 +160,7 @@ class EnglishDictionary:
         # The starter pool is not rebuilt here (slow); added words are usually rare ones.
         if (
             self._start_pool is not None
-            and not is_offensive(word)
+            and not _hidden_from_bot(word)
             and zipf_frequency(word, "en") >= self.COMMON_MIN_ZIPF
         ):
             self._common_by_first[word[0]].add(word)
@@ -198,11 +207,11 @@ class EnglishDictionary:
         used = set(used)
         common = [
             word for word in self._common_by_first.get(letter, ())
-            if word not in used and not is_offensive(word)
+            if word not in used and not _hidden_from_bot(word)
         ]
         if common:
             return random.choice(common)
-        options = [word for word in self.candidates(letter, used) if not is_offensive(word)]
+        options = [word for word in self.candidates(letter, used) if not _hidden_from_bot(word)]
         return random.choice(options) if options else None
 
     def _is_starter_shape(self, word: str) -> bool:
@@ -211,7 +220,7 @@ class EnglishDictionary:
             and word[-1] not in self.STARTER_BAD_ENDINGS
             and word not in self._blacklist
             and word not in EN_STARTER_EXCLUDE
-            and not is_offensive(word)
+            and not _hidden_from_bot(word)
             and bool(self.by_first.get(word[-1]))
         )
 
@@ -223,7 +232,7 @@ class EnglishDictionary:
         self._common_by_first.clear()
         pool: list[str] = []
         for word in top_n_list("en", self._FREQ_SCAN_SIZE):
-            if word not in self.words or is_offensive(word):
+            if word not in self.words or _hidden_from_bot(word):
                 continue
             zipf = zipf_frequency(word, "en")
             if zipf < self.COMMON_MIN_ZIPF:
