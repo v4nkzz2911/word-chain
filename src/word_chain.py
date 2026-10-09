@@ -1,15 +1,22 @@
 import json
 import logging
 import random
-import re
 import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from wordfreq import top_n_list, zipf_frequency
+from wordfreq import zipf_frequency
 
+from en_dictionary import (
+    EN_EXTRA_WORDS_FILE,
+    EN_WORDLIST_FILE,
+    MIN_EXPECTED_WORDS,
+    EnglishDictionary,
+    ensure_en_wordlist,
+)
+from en_text import last_letter, mask_en_word, parse_en_word
 from storage import GameStore
 from vi_dictionary import (
     EXTRA_WORDLIST_URLS,
@@ -74,7 +81,7 @@ STARTER_BLACKLIST = {
 
 class PhraseStatus:
     OK = "ok"                    # accepted
-    WIN = "win"                  # accepted and nothing can follow -> player wins (Vietnamese only)
+    WIN = "win"                  # accepted and nothing can follow -> player wins
     INVALID = "invalid"          # not a usable phrase
     COOLDOWN = "cooldown"        # player is still on cooldown
     WRONG_START = "wrong_start"  # does not start with the expected word
@@ -103,7 +110,7 @@ class WordChainState:
     current_phrase: str
     expected_start_word: str
     language: str
-    # Comparison key of the expected start word: casefolded word (en) or syllable key (vi).
+    # Comparison key of the expected start: last letter a-z (en) or syllable key (vi).
     expected_start_key: str = ""
     # Normalized phrase / word key -> name of the player who used it (None = bot starter).
     used: dict[str, str | None] = field(default_factory=dict)
@@ -122,8 +129,6 @@ class WordChainGameManager:
     COOLDOWN_SECONDS = 5.0
     HINTS_PER_DAY = 5
     SKIP_VOTES_NEEDED = 2
-    _STARTER_WORD_POOL_SIZE = 5000
-    _MEANINGFUL_WORD_MIN_ZIPF = 2.5
     # Each syllable of a Vietnamese starter word must be at least this common.
     _VI_STARTER_SYLLABLE_MIN_ZIPF = 3.5
 
@@ -133,6 +138,7 @@ class WordChainGameManager:
         ui_language: str | None = None,
         store: GameStore | None = None,
         vi_dictionary: VietnameseDictionary | None = None,
+        en_dictionary: EnglishDictionary | None = None,
     ) -> None:
         self._active_channel_id: int | None = None
         self._active_game: WordChainState | None = None
@@ -141,7 +147,6 @@ class WordChainGameManager:
         self._default_language = normalized_default or "en"
         normalized_ui = self.normalize_language(ui_language) if ui_language is not None else None
         self._ui_language = normalized_ui or self._default_language
-        self._starter_word_cache: dict[str, list[str]] = {}
         self._hints_used: dict[tuple[int, str], int] = {}  # used only without a store
         self._skip_votes: set[int] = set()  # players voting to skip the current word
         self._store = store
@@ -149,6 +154,11 @@ class WordChainGameManager:
             vi_dictionary
             if vi_dictionary is not None
             else VietnameseDictionary(is_common_starter=self._is_common_vi_starter)
+        )
+        self._en_dictionary = (
+            en_dictionary
+            if en_dictionary is not None
+            else EnglishDictionary(starter_blacklist=STARTER_BLACKLIST["en"])
         )
 
         if self._store is not None:
@@ -159,6 +169,8 @@ class WordChainGameManager:
                 if self._active_game.language == "vi":
                     # Keys may come from an older normalization: rebuild the one that matters.
                     self._active_game.expected_start_key = syllable_key(self._active_game.expected_start_word)
+                elif self._active_game.language == "en":
+                    self._migrate_english_state()
 
     @property
     def is_vietnamese_ui(self) -> bool:
@@ -167,6 +179,27 @@ class WordChainGameManager:
     @property
     def vi_dictionary(self) -> VietnameseDictionary:
         return self._vi_dictionary
+
+    @property
+    def en_dictionary(self) -> EnglishDictionary:
+        return self._en_dictionary
+
+    def _migrate_english_state(self) -> None:
+        """Games saved by the old phrase-based English mode continue from the last letter."""
+        game = self._active_game
+        key = game.expected_start_key
+        if len(key) == 1 and "a" <= key <= "z":
+            return
+        letter = last_letter(game.expected_start_word) or last_letter(game.current_phrase)
+        if letter is None:
+            logger.warning("Dropping a saved English game that cannot be resumed: %r", game.current_phrase)
+            self._active_channel_id = None
+            self._active_game = None
+            self._save()
+            return
+        game.expected_start_word = letter
+        game.expected_start_key = letter
+        self._save()
 
     def _tr(self, en: str, vi: str) -> str:
         return vi if self.is_vietnamese_ui else en
@@ -205,68 +238,56 @@ class WordChainGameManager:
             for syllable in display.split(" ")
         )
 
-    def apply_custom_words(self) -> None:
-        """Apply admin dictionary edits saved in the database."""
+    def load_english_word_files(self, data_dir: Path) -> int:
+        """Load the ENABLE word list (downloaded on first run) and data/extra_words_en.txt.
+
+        Blocking file/network I/O: run it in a worker thread. The words are loaded into a new
+        dictionary that replaces the current one only when everything succeeded, so a failed
+        load leaves English games unavailable instead of half-working.
+        """
+        dictionary = EnglishDictionary(starter_blacklist=self._en_dictionary.starter_blacklist)
+        path = ensure_en_wordlist(data_dir / EN_WORDLIST_FILE)
+        count = dictionary.load_file(path)
+        if count < MIN_EXPECTED_WORDS:
+            # Move the broken file away so the next start downloads it again.
+            # "words_en_enable.bad.txt" still matches the data/words*.txt .gitignore rule.
+            bad_path = path.with_name(path.stem + ".bad" + path.suffix)
+            path.replace(bad_path)
+            logger.warning(
+                "English word list %s looks incomplete (%d words); moved it to %s, "
+                "it will be downloaded again on the next start",
+                path, count, bad_path,
+            )
+            raise ValueError(
+                f"English word list {path} looks incomplete ({count} words); moved to {bad_path.name}"
+            )
+        extra = data_dir / EN_EXTRA_WORDS_FILE  # optional: one word per line
+        if extra.exists():
+            dictionary.load_file(extra)
+        dictionary.build_indexes()
+        self._en_dictionary = dictionary
+        return len(dictionary)
+
+    def apply_custom_words(self, language: str | None = None) -> None:
+        """Apply admin dictionary edits saved in the database.
+
+        language limits the edits to one dictionary ("en" or "vi"); None applies both.
+        Rows are routed by shape: one a-z token is English, anything else is Vietnamese.
+        """
         if self._store is None:
             return
         for word, added in self._store.custom_words():
-            if added:
-                self._vi_dictionary.add(word)
-            else:
-                self._vi_dictionary.remove(word)
-
-    # ---------- English helpers ----------
-    @staticmethod
-    def _extract_edge_words(text: str) -> tuple[str, str] | None:
-        words = re.findall(r"[^\W_]+(?:['-][^\W_]+)*", text.casefold(), flags=re.UNICODE)
-        if not words:
-            return None
-        return words[0], words[-1]
-
-    @staticmethod
-    def _tokenize(text: str) -> list[str]:
-        return re.findall(r"[^\W_]+(?:['-][^\W_]+)*", text.casefold(), flags=re.UNICODE)
-
-    @staticmethod
-    def _normalize_phrase(text: str) -> str:
-        return " ".join(WordChainGameManager._tokenize(text))
-
-    @staticmethod
-    def _word_count(text: str) -> int:
-        return len(WordChainGameManager._tokenize(text))
-
-    @staticmethod
-    def _is_word_in_dictionary(word: str, language: str) -> bool:
-        # zipf_frequency returns 0 when the token is unknown for a language.
-        return zipf_frequency(word, language) > 0
-
-    @staticmethod
-    def _is_single_word(token: str) -> bool:
-        return (
-            re.fullmatch(r"[^\W_]+(?:['-][^\W_]+)*", token, flags=re.UNICODE)
-            is not None
-        )
-
-    def _invalid_words(self, text: str, language: str) -> list[str]:
-        words = self._tokenize(text)
-        return [word for word in words if not self._is_word_in_dictionary(word, language)]
-
-    def _get_starter_word_pool(self, language: str) -> list[str]:
-        cached = self._starter_word_cache.get(language)
-        if cached is not None:
-            return cached
-
-        candidates = top_n_list(language, self._STARTER_WORD_POOL_SIZE)
-        word_pool = [
-            word
-            for word in candidates
-            if self._is_single_word(word)
-            and len(word) >= 2
-            and zipf_frequency(word, language) >= self._MEANINGFUL_WORD_MIN_ZIPF
-            and word.casefold() not in STARTER_BLACKLIST.get(language, set())
-        ]
-        self._starter_word_cache[language] = word_pool
-        return word_pool
+            if parse_en_word(word, fold_accents=False) is not None:  # one a-z token -> English
+                if language in (None, "en"):
+                    if added:
+                        self._en_dictionary.add(word)
+                    else:
+                        self._en_dictionary.remove(word)
+            elif language in (None, "vi"):
+                if added:
+                    self._vi_dictionary.add(word)
+                else:
+                    self._vi_dictionary.remove(word)
 
     # ---------- game state ----------
     @staticmethod
@@ -300,15 +321,16 @@ class WordChainGameManager:
                 used={key: None},
             )
 
-        starter_pool = self._get_starter_word_pool(language)
-        if not starter_pool:
+        starter = self._en_dictionary.random_start()
+        if starter is None:
             return None
-        starter_word = random.choice(starter_pool)
+        letter = starter[-1]
         return WordChainState(
-            current_phrase=starter_word,
-            expected_start_word=starter_word,
+            current_phrase=starter,
+            expected_start_word=letter,
             language=language,
-            expected_start_key=starter_word.casefold(),
+            expected_start_key=letter,
+            used={starter: None},
         )
 
     def _save(self) -> None:
@@ -344,18 +366,31 @@ class WordChainGameManager:
             f"{title}\n"
             f"> **Language:** `{language_label}`\n"
             f"> **Starter word:** `{game.current_phrase}`\n"
-            f"> **Next phrase must start with:** `{game.expected_start_word}`\n"
+            f"> **Next word must start with the letter:** `{game.expected_start_word}`\n"
+            "> **Rule:** one English word, 3+ letters (a–z)\n"
             f"> **Cooldown per user:** `{int(self.COOLDOWN_SECONDS)}s`",
             f"{title}\n"
             f"> **Ngôn ngữ:** `{language_label}`\n"
             f"> **Từ bắt đầu:** `{game.current_phrase}`\n"
-            f"> **Cụm tiếp theo phải bắt đầu bằng:** `{game.expected_start_word}`\n"
+            f"> **Từ tiếp theo phải bắt đầu bằng chữ:** `{game.expected_start_word}`\n"
+            "> **Luật:** một từ tiếng Anh, từ 3 chữ cái trở lên (a–z)\n"
             f"> **Cooldown mỗi người:** `{int(self.COOLDOWN_SECONDS)}s`",
         )
 
     def _vi_example_answer(self, game: WordChainState) -> str | None:
         options = self._vi_dictionary.candidates(game.expected_start_key, game.used)
         return self._vi_dictionary.words[random.choice(options)] if options else None
+
+    def _en_example_answer(self, game: WordChainState) -> str | None:
+        return self._en_dictionary.example(game.expected_start_key, game.used)
+
+    def _en_unavailable_message(self) -> str:
+        return self._tr(
+            "❌ **The English dictionary is not available**\n"
+            "> The word list could not be loaded. Check the bot logs and restart the bot.",
+            "❌ **Từ điển tiếng Anh chưa sẵn sàng**\n"
+            "> Không tải được danh sách từ. Hãy kiểm tra log của bot và khởi động lại bot.",
+        )
 
     def start_game(self, channel_id: int, language: str | None = None) -> tuple[bool, str]:
         if self._active_game is not None:
@@ -371,6 +406,8 @@ class WordChainGameManager:
                 "❌ **Ngôn ngữ không hỗ trợ**\n> Hãy dùng `en` (Tiếng Anh) hoặc `vi` (Tiếng Việt).",
             )
         selected_language = normalized_language or self._default_language
+        if selected_language == "en" and not len(self._en_dictionary):
+            return False, self._en_unavailable_message()
 
         game = self._new_state(selected_language)
         if game is None:
@@ -413,6 +450,13 @@ class WordChainGameManager:
                     f"\n> Could have continued with: `{hint}`",
                     f"\n> Có thể nối bằng: `{hint}`",
                 )
+        elif game.language == "en":
+            hint = self._en_example_answer(game)
+            if hint:
+                summary += self._tr(
+                    f"\n> Could have continued with: `{hint}`",
+                    f"\n> Có thể nối bằng: `{hint}`",
+                )
 
         self._active_channel_id = None
         self._active_game = None
@@ -439,6 +483,21 @@ class WordChainGameManager:
             )
 
         language_label = self._label_for_language(game.language)
+        if game.language == "en":
+            return True, self._tr(
+                "📋 **Word-chain status**\n"
+                f"> **Language:** `{language_label}`\n"
+                f"> **Current word:** `{game.current_phrase}`\n"
+                f"> **Next word must start with the letter:** `{game.expected_start_word}`\n"
+                f"> **Turns:** `{game.turns}`\n"
+                f"> **Per-user cooldown:** `{int(self.COOLDOWN_SECONDS)}s`",
+                "📋 **Trạng thái nối từ**\n"
+                f"> **Ngôn ngữ:** `{language_label}`\n"
+                f"> **Từ hiện tại:** `{game.current_phrase}`\n"
+                f"> **Từ tiếp theo phải bắt đầu bằng chữ:** `{game.expected_start_word}`\n"
+                f"> **Số lượt nối:** `{game.turns}`\n"
+                f"> **Cooldown mỗi người:** `{int(self.COOLDOWN_SECONDS)}s`",
+            )
         return True, self._tr(
             "📋 **Word-chain status**\n"
             f"> **Language:** `{language_label}`\n"
@@ -479,11 +538,6 @@ class WordChainGameManager:
                 "❌ **No active word-chain game in this channel**",
                 "❌ **Không có trò chơi nối từ nào đang hoạt động trong kênh này**",
             )
-        if game.language != "vi":
-            return False, self._tr(
-                "❌ **Hints are only available in Vietnamese games**",
-                "❌ **Gợi ý chỉ có trong trò chơi tiếng Việt**",
-            )
 
         day = datetime.now(VIETNAM_TZ).date().isoformat()
         used = self._get_hints_used(user_id, day)
@@ -493,22 +547,47 @@ class WordChainGameManager:
                 f"❌ **Bạn đã dùng hết {self.HINTS_PER_DAY} lượt gợi ý hôm nay**\n> Lượt gợi ý được làm mới lúc 0 giờ (giờ Việt Nam).",
             )
 
-        options = self._vi_dictionary.candidates(game.expected_start_key, game.used)
-        if not options:
+        if game.language == "vi":
+            options = self._vi_dictionary.candidates(game.expected_start_key, game.used)
+            if not options:
+                return False, self._tr(
+                    "❌ **No word can follow anymore**",
+                    "❌ **Không còn từ nào để nối tiếp**",
+                )
+
+            hint = self._mask_hint(self._vi_dictionary.words[random.choice(options)])
+            self._record_hint(user_id, day)
+            remaining = self.HINTS_PER_DAY - used - 1
+            return True, self._tr(
+                f"💡 **Hint:** `{hint}`\n"
+                f"> **{len(options)}** word(s) can follow `{game.expected_start_word}`.\n"
+                f"> Hints left today: **{remaining}/{self.HINTS_PER_DAY}**",
+                f"💡 **Gợi ý:** `{hint}`\n"
+                f"> Có **{len(options)}** từ có thể nối tiếp `{game.expected_start_word}`.\n"
+                f"> Lượt gợi ý còn lại hôm nay: **{remaining}/{self.HINTS_PER_DAY}**",
+            )
+
+        # English: the shared daily counter is used the same way.
+        if not len(self._en_dictionary):
+            return False, self._en_unavailable_message()
+        letter = game.expected_start_key
+        count = self._en_dictionary.count_continuations(letter, game.used)
+        word = self._en_dictionary.example(letter, game.used) if count else None
+        if word is None:
             return False, self._tr(
                 "❌ **No word can follow anymore**",
                 "❌ **Không còn từ nào để nối tiếp**",
             )
 
-        hint = self._mask_hint(self._vi_dictionary.words[random.choice(options)])
+        hint = mask_en_word(word)
         self._record_hint(user_id, day)
         remaining = self.HINTS_PER_DAY - used - 1
         return True, self._tr(
             f"💡 **Hint:** `{hint}`\n"
-            f"> **{len(options)}** word(s) can follow `{game.expected_start_word}`.\n"
+            f"> **{count}** word(s) can follow (starting with `{letter}`).\n"
             f"> Hints left today: **{remaining}/{self.HINTS_PER_DAY}**",
             f"💡 **Gợi ý:** `{hint}`\n"
-            f"> Có **{len(options)}** từ có thể nối tiếp `{game.expected_start_word}`.\n"
+            f"> Có **{count}** từ có thể nối tiếp (bắt đầu bằng chữ `{letter}`).\n"
             f"> Lượt gợi ý còn lại hôm nay: **{remaining}/{self.HINTS_PER_DAY}**",
         )
 
@@ -543,12 +622,23 @@ class WordChainGameManager:
                 f"> Cần thêm **{missing}** người bỏ phiếu để bỏ qua `{game.expected_start_word}`.",
             )
 
-        skip_text = self._tr(
-            f"⏭️ **Skipped!** Nobody could continue `{game.expected_start_word}`.",
-            f"⏭️ **Đã bỏ qua!** Không ai nối được `{game.expected_start_word}`.",
-        )
         if game.language == "vi":
+            skip_text = self._tr(
+                f"⏭️ **Skipped!** Nobody could continue `{game.expected_start_word}`.",
+                f"⏭️ **Đã bỏ qua!** Không ai nối được `{game.expected_start_word}`.",
+            )
             answer = self._vi_example_answer(game)
+            if answer:
+                skip_text += self._tr(
+                    f"\n> Could have continued with: `{answer}`",
+                    f"\n> Có thể nối bằng: `{answer}`",
+                )
+        else:
+            skip_text = self._tr(
+                f"⏭️ **Skipped!** Nobody found a word starting with `{game.expected_start_word}`.",
+                f"⏭️ **Đã bỏ qua!** Không ai tìm được từ bắt đầu bằng chữ `{game.expected_start_word}`.",
+            )
+            answer = self._en_example_answer(game)
             if answer:
                 skip_text += self._tr(
                     f"\n> Could have continued with: `{answer}`",
@@ -733,68 +823,74 @@ class WordChainGameManager:
         user_name: str,
         text: str,
     ) -> PhraseResult | None:
+        # Anything that is not one English word of 3+ letters is treated as chat and ignored.
+        word = parse_en_word(text)
+        if word is None or not len(self._en_dictionary):
+            return None
+
         now = time.monotonic()
         key = (channel_id, user_id)
-
-        normalized_phrase = self._normalize_phrase(text)
-        if not normalized_phrase:
-            return PhraseResult(
-                PhraseStatus.INVALID,
-                self._tr("❌ **Please send a word or phrase**", "❌ **Vui lòng gửi một từ hoặc cụm từ**"),
-            )
-
-        if self._word_count(text) < 2:
-            return PhraseResult(
-                PhraseStatus.INVALID,
-                self._tr(
-                    "❌ **The phrase must have at least 2 words**\n> Not just the last word again.",
-                    "❌ **Cụm từ phải có ít nhất 2 từ**\n> Không chỉ lặp lại từ cuối.",
-                ),
-            )
-
-        if normalized_phrase in game.used:
-            return PhraseResult(PhraseStatus.USED, self._used_message(game.used[normalized_phrase]))
-
         cooldown_error = self._check_cooldown(key, user_name, now)
         if cooldown_error is not None:
             return cooldown_error
 
-        edge_words = self._extract_edge_words(text)
-        if edge_words is None:
-            return PhraseResult(
-                PhraseStatus.INVALID,
-                self._tr("❌ **Please send a word or phrase**", "❌ **Vui lòng gửi một từ hoặc cụm từ**"),
-            )
-
-        first_word, last_word = edge_words
-        if first_word != game.expected_start_key:
+        if word[0] != game.expected_start_key:
             return PhraseResult(
                 PhraseStatus.WRONG_START,
                 self._tr(
-                    f"❌ **Wrong start word**\n> Your phrase must start with: `{game.expected_start_word}`",
-                    f"❌ **Sai từ bắt đầu**\n> Cụm từ của bạn phải bắt đầu bằng: `{game.expected_start_word}`",
+                    f"❌ **Wrong first letter**\n> Your word must start with the letter: `{game.expected_start_word}`",
+                    f"❌ **Sai chữ cái đầu**\n> Từ của bạn phải bắt đầu bằng chữ: `{game.expected_start_word}`",
                 ),
             )
 
-        invalid_words = self._invalid_words(text, game.language)
-        if invalid_words:
+        if word not in self._en_dictionary:
             language_label = self._label_for_language(game.language)
-            unknown_text = ", ".join(f"**{word}**" for word in invalid_words)
             return PhraseResult(
                 PhraseStatus.NOT_IN_DICT,
                 self._tr(
-                    f"❌ **Unknown word(s) for {language_label} dictionary**\n> {unknown_text}",
-                    f"❌ **Từ không tồn tại trong từ điển {language_label}**\n> {unknown_text}",
+                    f"❌ **Unknown word for {language_label} dictionary**\n> **{word}**",
+                    f"❌ **Từ không tồn tại trong từ điển {language_label}**\n> **{word}**",
                 ),
             )
 
-        self._accept(game, normalized_phrase, text.strip(), last_word, last_word, key, user_id, user_name, now)
+        if word in game.used:
+            return PhraseResult(PhraseStatus.USED, self._used_message(game.used[word]))
+
+        last = word[-1]
+        self._accept(game, word, word, last, last, key, user_id, user_name, now)
+
+        if self._en_dictionary.has_continuation(last, game.used):
+            return PhraseResult(
+                PhraseStatus.OK,
+                self._tr(
+                    f"✅ **Correct**\n> Next word must start with the letter: `{last}`",
+                    f"✅ **Chính xác**\n> Từ tiếp theo phải bắt đầu bằng chữ: `{last}`",
+                ),
+            )
+
+        # Dead end: nobody can continue -> this player wins and a new round starts.
+        self._bump(user_id, "wins")
+        win_text = self._tr(
+            f"🏆 **{user_name} wins with `{word}`!**\n"
+            f"> No unused word starts with the letter `{last}`.\n"
+            f"> The round lasted **{game.turns}** turn(s).",
+            f"🏆 **{user_name} chiến thắng với từ `{word}`!**\n"
+            f"> Không còn từ nào bắt đầu bằng chữ `{last}`.\n"
+            f"> Lượt chơi kéo dài **{game.turns}** lượt nối.",
+        )
+        new_game = self._new_state(game.language)
+        if new_game is None:
+            self._active_channel_id = None
+            self._active_game = None
+            self._save()
+            return PhraseResult(PhraseStatus.WIN, win_text)
+
+        self._active_game = new_game
+        self._last_answer_at.clear()
+        self._skip_votes.clear()
         return PhraseResult(
-            PhraseStatus.OK,
-            self._tr(
-                f"✅ **Correct**\n> Next phrase must start with: `{last_word}`",
-                f"✅ **Chính xác**\n> Cụm từ tiếp theo phải bắt đầu bằng: `{last_word}`",
-            ),
+            PhraseStatus.WIN,
+            win_text + "\n\n" + self._round_intro(new_game, self._tr("🎮 **New round!**", "🎮 **Lượt chơi mới!**")),
         )
 
     # ---------- stats ----------
@@ -842,7 +938,14 @@ class WordChainGameManager:
     # ---------- dictionary tools ----------
     def check_word(self, text: str, language: str | None = None) -> tuple[bool, str]:
         if language is None:
-            language = self._active_game.language if self._active_game is not None else self._default_language
+            # Route by shape like add_word: one a-z token -> English, several tokens ->
+            # Vietnamese; anything else uses the active game's (or the default) language.
+            if parse_en_word(text, fold_accents=False) is not None:
+                language = "en"
+            elif any(ch.isspace() for ch in text.strip()):
+                language = "vi"
+            else:
+                language = self._active_game.language if self._active_game is not None else self._default_language
 
         if language == "vi":
             parsed = parse_word(text)
@@ -863,24 +966,73 @@ class WordChainGameManager:
                 f"✅ **{display}** có trong từ điển. Có **{count}** từ có thể nối tiếp.",
             )
 
-        normalized_phrase = self._normalize_phrase(text)
-        if not normalized_phrase:
-            return False, self._tr("❌ **Please send a word or phrase**", "❌ **Vui lòng gửi một từ hoặc cụm từ**")
-        invalid_words = self._invalid_words(text, language)
-        if invalid_words:
-            unknown_text = ", ".join(f"**{word}**" for word in invalid_words)
+        word = parse_en_word(text)
+        if word is None:
             return False, self._tr(
-                f"❌ **Unknown word(s):** {unknown_text}",
-                f"❌ **Từ không có trong từ điển:** {unknown_text}",
+                "❌ **An English word must be one word of 3+ letters (a–z only)**",
+                "❌ **Từ tiếng Anh phải là một từ, từ 3 chữ cái trở lên (chỉ a–z)**",
             )
+        if not len(self._en_dictionary):
+            return False, self._en_unavailable_message()
+        if word not in self._en_dictionary:
+            return False, self._tr(
+                f"❌ **{word}** is not in the dictionary.",
+                f"❌ **{word}** không có trong từ điển.",
+            )
+        count = self._en_dictionary.count_continuations(word[-1])
         return True, self._tr(
-            f"✅ **{normalized_phrase}** is valid.",
-            f"✅ **{normalized_phrase}** hợp lệ.",
+            f"✅ **{word}** is in the dictionary. **{count}** word(s) can follow it (starting with `{word[-1]}`).",
+            f"✅ **{word}** có trong từ điển. Có **{count}** từ có thể nối tiếp (bắt đầu bằng chữ `{word[-1]}`).",
+        )
+
+    def _invalid_word_shape_message(self) -> str:
+        return self._tr(
+            "❌ **Invalid word**\n"
+            "> English: one word, 3+ letters (a–z). Vietnamese: exactly 2 syllables (letters only).",
+            "❌ **Từ không hợp lệ**\n"
+            "> Tiếng Anh: một từ, từ 3 chữ cái trở lên (a–z). Tiếng Việt: đúng 2 âm tiết (chỉ có chữ cái).",
+        )
+
+    def _add_english_word(self, word: str, user_id: int) -> tuple[bool, str]:
+        if not len(self._en_dictionary):
+            return False, self._en_unavailable_message()
+        if word in self._en_dictionary:
+            return False, self._tr(
+                f"ℹ️ **{word}** is already in the dictionary.",
+                f"ℹ️ **{word}** đã có trong từ điển rồi.",
+            )
+        self._en_dictionary.add(word)
+        if self._store is not None:
+            self._store.set_custom_word(word, True, user_id)
+        return True, self._tr(
+            f"✅ Added **{word}** to the English dictionary.",
+            f"✅ Đã thêm **{word}** vào từ điển tiếng Anh.",
+        )
+
+    def _remove_english_word(self, word: str, user_id: int) -> tuple[bool, str]:
+        if self._en_dictionary.remove(word) is None:
+            return False, self._tr(
+                "❌ This word is not in the dictionary.",
+                "❌ Không tìm thấy từ này trong từ điển.",
+            )
+        if self._store is not None:
+            self._store.set_custom_word(word, False, user_id)
+        return True, self._tr(
+            f"🗑️ Removed **{word}** from the English dictionary.",
+            f"🗑️ Đã xoá **{word}** khỏi từ điển tiếng Anh.",
         )
 
     def add_word(self, text: str, user_id: int) -> tuple[bool, str]:
+        # Routing by shape: one a-z token ("apple", also "hoa") -> English. Accents are kept,
+        # so "học" is not English and fails the Vietnamese check too -> shape message.
+        # Several tokens ("ice cream", "học sinh") -> Vietnamese, as before.
+        en_word = parse_en_word(text, fold_accents=False)
+        if en_word is not None:
+            return self._add_english_word(en_word, user_id)
         parsed = parse_word(text)
         if parsed is None:
+            if not any(ch.isspace() for ch in text.strip()):
+                return False, self._invalid_word_shape_message()
             return False, self._tr(
                 "❌ **A Vietnamese word must have exactly 2 syllables** (letters only)",
                 "❌ **Từ phải gồm đúng 2 âm tiết** (chỉ có chữ cái)",
@@ -900,6 +1052,9 @@ class WordChainGameManager:
         )
 
     def remove_word(self, text: str, user_id: int) -> tuple[bool, str]:
+        en_word = parse_en_word(text, fold_accents=False)  # same routing as add_word
+        if en_word is not None:
+            return self._remove_english_word(en_word, user_id)
         parsed = parse_word(text)
         if parsed is None or self._vi_dictionary.remove(parsed[1]) is None:
             return False, self._tr(

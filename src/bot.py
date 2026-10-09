@@ -109,14 +109,15 @@ def build_bot() -> tuple[commands.Bot, str]:
                 f"- `{prefix}hoso [người]` hoặc `/chainme` - Xem hồ sơ nối từ\n"
                 f"- `{prefix}bxh` hoặc `/chainrank` - Bảng xếp hạng top 20\n"
                 f"- `{prefix}kiemtra <từ>` hoặc `/chaincheck` - Kiểm tra từ có trong từ điển\n"
-                f"- `{prefix}them-tu <từ>` / `{prefix}xoa-tu <từ>` - Thêm/xoá từ tiếng Việt (quản trị)\n\n"
+                f"- `{prefix}them-tu <từ>` / `{prefix}xoa-tu <từ>` - Thêm/xoá từ tiếng Anh hoặc tiếng Việt (quản trị)\n\n"
                 "### **Cách chơi (Tiếng Việt)**\n"
                 f"1. Dùng `{prefix}chainstart vi` hoặc `/chainstart`\n"
                 "2. Bot đưa ra một từ gồm 2 âm tiết, ví dụ `học sinh`\n"
                 "3. Người chơi gửi một từ 2 âm tiết bắt đầu bằng âm tiết cuối (đúng cả dấu): `sinh viên` → `viên chức`\n"
                 "4. Ai nối đến từ mà **không còn từ nào nối tiếp được** sẽ thắng 🏆, bot tự mở lượt mới\n\n"
                 "### **Cách chơi (Tiếng Anh)**\n"
-                "- Gửi cụm từ (từ 2 từ trở lên) bắt đầu bằng từ cuối của cụm trước: `king` → `king maker` → `maker ...`\n\n"
+                "- Gửi MỘT từ (3+ chữ cái) bắt đầu bằng chữ cái cuối của từ trước: `apple` → `egg` → `goat`\n"
+                "- Tin nhắn có dấu cách bị bỏ qua\n\n"
                 "### **Quy tắc**\n"
                 "- Từ phải có trong từ điển và chưa được dùng trong lượt chơi\n"
                 "- Chấp nhận cả hai kiểu bỏ dấu: `hoà`/`hòa`, `thuỷ`/`thủy`, và cả i/y: `mỹ`/`mĩ`, `kỳ`/`kì`\n"
@@ -125,7 +126,7 @@ def build_bot() -> tuple[commands.Bot, str]:
                 "- Chỉ được chạy 1 trò chơi nối từ tại một thời điểm\n"
                 "- Bot thả ✅ khi đúng, ❌ khi sai, ⏳ khi đang trong cooldown\n\n"
                 "-# Nguồn từ điển: Hồ Ngọc Đức (vietnamese-wordlist) · dữ liệu từ điển của @minhqnd, "
-                "<https://dict.minhqnd.com> (CC BY-SA 4.0)"
+                "<https://dict.minhqnd.com> (CC BY-SA 4.0) · ENABLE (public domain)"
             )
 
         return (
@@ -140,27 +141,28 @@ def build_bot() -> tuple[commands.Bot, str]:
             f"- `{prefix}chainstart [en|vi]` or `/chainstart` - Start a new game\n"
             f"- `{prefix}chainstop` or `/chainstop` - Stop the current game\n"
             f"- `{prefix}chainstatus` or `/chainstatus` - Show game status\n"
-            f"- `{prefix}chainhint` or `/chainhint` - Hint for the next word (Vietnamese games, 5 per day)\n"
+            f"- `{prefix}chainhint` or `/chainhint` - Hint for the next word (5 per day)\n"
             f"- ⏭️ **Skip** button, `{prefix}chainskip` or `/chainskip` - Vote to skip a stuck word (2 votes)\n"
             f"- `{prefix}chainme [member]` or `/chainme` - Show a word-chain profile\n"
             f"- `{prefix}chainrank` or `/chainrank` - Top 20 leaderboard\n"
             f"- `{prefix}chaincheck <word>` or `/chaincheck` - Check a word against the dictionary\n"
-            f"- `{prefix}chainadd <word>` / `{prefix}chainremove <word>` - Edit the Vietnamese dictionary (admin)\n\n"
+            f"- `{prefix}chainadd <word>` / `{prefix}chainremove <word>` - Edit the dictionary (admin)\n\n"
             "### **How To Play (English)**\n"
             f"1. Run `{prefix}chainstart [en|vi]` or `/chainstart`\n"
-            "2. Bot gives a random starter word\n"
-            "3. Send a phrase that starts with the last word of the previous phrase\n"
-            "4. Example: bot says `king` -> player says `king maker` -> next phrase must start with `maker`\n\n"
+            "2. Bot gives a random starter word, e.g. `apple`\n"
+            "3. Send ONE word (3+ letters) starting with the LAST LETTER of the previous one: `apple` -> `egg` -> `goat`\n"
+            "4. Messages with spaces are ignored. If nothing can follow, you win 🏆 and a new round starts\n\n"
             "### **How To Play (Vietnamese)**\n"
             "- Each answer is exactly 2 syllables and starts with the last syllable (same tone): `học sinh` -> `sinh viên`\n"
             "- Whoever plays a word that **nobody can continue** wins 🏆 and a new round starts\n\n"
             "### **Rules**\n"
-            "- Your first word must match the expected start word\n"
+            "- Start with the last letter (English) or last syllable (Vietnamese) of the previous word\n"
             "- Words must be in the dictionary and can't be reused\n"
             "- Cooldown: 5 seconds between accepted answers per user\n"
             "- Only one word-chain game can run at a time\n"
             "- The bot reacts ✅ for correct, ❌ for wrong, ⏳ while you're on cooldown\n\n"
-            "-# Vietnamese dictionary: Hồ Ngọc Đức (vietnamese-wordlist) · dictionary data by @minhqnd, "
+            "-# English dictionary: ENABLE (public domain) · "
+            "Vietnamese dictionary: Hồ Ngọc Đức (vietnamese-wordlist) · dictionary data by @minhqnd, "
             "<https://dict.minhqnd.com> (CC BY-SA 4.0)"
         )
 
@@ -172,7 +174,7 @@ def build_bot() -> tuple[commands.Bot, str]:
     async def setup_hook() -> None:
         try:
             await asyncio.to_thread(word_chain.load_vietnamese_word_files, DATA_DIR)
-            word_chain.apply_custom_words()
+            word_chain.apply_custom_words("vi")
             logger.info(
                 "Loaded %d Vietnamese 2-syllable words (%d starter words)",
                 len(word_chain.vi_dictionary),
@@ -180,6 +182,17 @@ def build_bot() -> tuple[commands.Bot, str]:
             )
         except Exception:
             logger.exception("Failed to load the Vietnamese dictionary; Vietnamese games are unavailable")
+
+        try:
+            await asyncio.to_thread(word_chain.load_english_word_files, DATA_DIR)
+            word_chain.apply_custom_words("en")
+            logger.info(
+                "Loaded %d English words (%d starter words)",
+                len(word_chain.en_dictionary),
+                word_chain.en_dictionary.start_pool_size,
+            )
+        except Exception:
+            logger.exception("Failed to load the English dictionary; English games are unavailable")
 
         # Make skip buttons on messages sent before a restart clickable again.
         bot.add_view(SkipView())
@@ -358,7 +371,7 @@ def build_bot() -> tuple[commands.Bot, str]:
         await ctx.send(response)
 
     @bot.tree.command(name="chaincheck", description="Check whether a word is in the dictionary")
-    @app_commands.describe(word="Word to check (Vietnamese: exactly 2 syllables)")
+    @app_commands.describe(word="Word to check (English: one word; Vietnamese: exactly 2 syllables)")
     async def slash_chain_check(interaction: discord.Interaction, word: str) -> None:
         _, response = word_chain.check_word(word)
         await interaction.response.send_message(response)
@@ -369,9 +382,9 @@ def build_bot() -> tuple[commands.Bot, str]:
         _, response = word_chain.add_word(word, ctx.author.id)
         await ctx.send(response)
 
-    @bot.tree.command(name="chainadd", description="Add a Vietnamese word to the dictionary (admin)")
+    @bot.tree.command(name="chainadd", description="Add a word to the dictionary (admin)")
     @app_commands.default_permissions(manage_guild=True)
-    @app_commands.describe(word="Vietnamese word with exactly 2 syllables")
+    @app_commands.describe(word="English: one word (a–z); Vietnamese: exactly 2 syllables")
     async def slash_chain_add(interaction: discord.Interaction, word: str) -> None:
         _, response = word_chain.add_word(word, interaction.user.id)
         await interaction.response.send_message(response)
@@ -382,9 +395,9 @@ def build_bot() -> tuple[commands.Bot, str]:
         _, response = word_chain.remove_word(word, ctx.author.id)
         await ctx.send(response)
 
-    @bot.tree.command(name="chainremove", description="Remove a Vietnamese word from the dictionary (admin)")
+    @bot.tree.command(name="chainremove", description="Remove a word from the dictionary (admin)")
     @app_commands.default_permissions(manage_guild=True)
-    @app_commands.describe(word="Vietnamese word with exactly 2 syllables")
+    @app_commands.describe(word="English: one word (a–z); Vietnamese: exactly 2 syllables")
     async def slash_chain_remove(interaction: discord.Interaction, word: str) -> None:
         _, response = word_chain.remove_word(word, interaction.user.id)
         await interaction.response.send_message(response)

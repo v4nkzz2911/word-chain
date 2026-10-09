@@ -41,7 +41,7 @@ python src/bot.py
 - Start word-chain game: `/chainstart` or `<prefix>chainstart [en|vi]`
 - Stop word-chain game: `/chainstop` or `<prefix>chainstop`
 - Show word-chain status: `/chainstatus` or `<prefix>chainstatus`
-- Hint for the next word (Vietnamese games, 5 per person per day, resets at midnight Vietnam time):
+- Hint for the next word (5 per person per day, shared by both languages, resets at midnight Vietnam time):
   `/chainhint` (only you see it) or `<prefix>chainhint` (alias `<prefix>goiy`, `<prefix>hint`)
 - Vote to skip a word nobody can continue: click the ⏭️ **Skip** button under the game messages, or use
   `/chainskip` / `<prefix>chainskip` (alias `<prefix>boqua`, `<prefix>skip`).
@@ -50,8 +50,10 @@ python src/bot.py
 - Player profile: `/chainme [member]` or `<prefix>chainme [member]` (alias `<prefix>hoso`)
 - Top 20 leaderboard: `/chainrank` or `<prefix>chainrank` (alias `<prefix>bxh`)
 - Check a word: `/chaincheck <word>` or `<prefix>chaincheck <word>` (alias `<prefix>kiemtra`)
-- Add / remove a Vietnamese word (Manage Server permission): `/chainadd <word>`, `/chainremove <word>`
-  (aliases `<prefix>them-tu` / `<prefix>themtu`, `<prefix>xoa-tu` / `<prefix>xoatu`)
+- Add / remove a word (Manage Server permission): `/chainadd <word>`, `/chainremove <word>`
+  (aliases `<prefix>them-tu` / `<prefix>themtu`, `<prefix>xoa-tu` / `<prefix>xoatu`).
+  A single word of letters a–z (e.g. `zyzzyva`) goes to the English dictionary;
+  a 2-syllable word (e.g. `học sinh`) goes to the Vietnamese dictionary.
 
 `<prefix>` is your `DISCORD_COMMAND_PREFIX` value (default `!`).
 Vietnamese aliases work only with the prefix; slash commands keep their English names.
@@ -88,11 +90,25 @@ Vietnamese aliases work only with the prefix; slash commands keep their English 
 
 ### English (`en`)
 
-- Players reply with a phrase (2+ words) whose first word matches the last word of the previous phrase.
-- Each word is checked against the `wordfreq` English dictionary.
+- Every answer is **one English word** of 3+ letters (a–z) that starts with the **last letter** of the
+  previous word. A word cannot be used twice in a round (the starter word counts as used).
+- Markdown, trailing punctuation, capitals and accents are ignored: `**Apple!**` → `apple`, `café` → `cafe`.
+- Messages with spaces, apostrophes, hyphens or digits (`don't`, `x-ray`, `abc1`, `hello there`) are treated
+  as chat and ignored.
+- Words are checked against the [ENABLE](https://github.com/dolph/dictionary) word list (~172,800 words,
+  public domain), downloaded once to `data/words_en_enable.txt` on first run.
+  Extra words can be added in `data/extra_words_en.txt` (one per line) or with `/chainadd`.
+- Starter words are common 4–8 letter words (via `wordfreq`) that do not end in j, q, x, y or z.
+- Hints show the first letter and the length, e.g. `a____`, plus how many words can follow.
+- Whoever plays a word that **nobody can continue** (no unused word starts with its last letter) wins,
+  and a new round starts automatically.
+- Example flow: `apple` → `egg` → `goat` → `tiger` → ...
+- If the word list cannot be downloaded, English games are unavailable but Vietnamese games still work.
+- English games saved by the old phrase-based version resume from the last letter of the last phrase.
 
 ## Dictionary credits
 
+- English: ENABLE word list (public domain), via [dolph/dictionary](https://github.com/dolph/dictionary).
 - Word lists by Hồ Ngọc Đức, via [duyet/vietnamese-wordlist](https://github.com/duyet/vietnamese-wordlist) (GPL-2.0).
 - Dictionary data by [@minhqnd](https://github.com/minhqnd), [dict.minhqnd.com](https://dict.minhqnd.com) (CC BY-SA 4.0).
 
