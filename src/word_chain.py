@@ -848,20 +848,16 @@ class WordChainGameManager:
                 ),
             )
 
+        # A word with the wrong first letter is chat ("thanks", unaccented Vietnamese like
+        # "roi"), not an attempt: ignore it without a reaction, a stat or a cooldown check.
+        if word[0] != game.expected_start_key:
+            return None
+
         now = time.monotonic()
         key = (channel_id, user_id)
         cooldown_error = self._check_cooldown(key, user_name, now)
         if cooldown_error is not None:
             return cooldown_error
-
-        if word[0] != game.expected_start_key:
-            return PhraseResult(
-                PhraseStatus.WRONG_START,
-                self._tr(
-                    f"❌ **Wrong first letter**\n> Your word must start with the letter: `{game.expected_start_word}`",
-                    f"❌ **Sai chữ cái đầu**\n> Từ của bạn phải bắt đầu bằng chữ: `{game.expected_start_word}`",
-                ),
-            )
 
         if word not in self._en_dictionary:
             language_label = self._label_for_language(game.language)

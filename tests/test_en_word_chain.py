@@ -176,13 +176,23 @@ class GameplayTests(BaseCase):
         self.assertEqual(self.store.get_player(1, "en")["wrong"], 0)
         self.assertEqual(self.play("goat", user_id=2, name="Ann").status, PhraseStatus.OK)
 
-    def test_03_wrong_start(self):
+    def test_03_wrong_start_is_chat(self):
+        # One-word chat ("thanks", unaccented Vietnamese "roi") with the wrong first letter
+        # is ignored: no reaction, no stat, no cooldown, the chain stays.
         self.set_en_state("g", "egg")
-        result = self.play("rabbit")
-        self.assertEqual(result.status, PhraseStatus.WRONG_START)
-        self.assertIn("Wrong first letter", result.message)
-        self.assertIn("`g`", result.message)
-        self.assertEqual(self.store.get_player(1, "en")["wrong"], 1)
+        for text in ("rabbit", "thanks", "roi", "Okay!"):
+            with self.subTest(text=text):
+                self.assertIsNone(self.play(text))
+        self.assertEqual(self.store.get_player(1, "en"), {"correct": 0, "wrong": 0, "wins": 0})
+        self.assertNotIn((CH, 1), self.mgr._last_answer_at)
+        self.assertEqual(self.mgr._active_game.expected_start_key, "g")
+        self.assertEqual(self.mgr._active_game.turns, 0)
+
+    def test_03b_wrong_start_ignored_during_cooldown(self):
+        self.set_en_state()
+        self.assertEqual(self.play("egg").status, PhraseStatus.OK)
+        self.assertIsNone(self.play("thanks"))  # chat, not ⏳
+        self.assertEqual(self.play("goat").status, PhraseStatus.COOLDOWN)
 
     def test_04_not_in_dict(self):
         self.set_en_state("g", "egg")
@@ -584,7 +594,7 @@ class VietnameseUiToolTests(BaseCase):
 
     def test_play_messages(self):
         self.set_en_state()
-        self.assertIn("Sai chữ cái đầu", self.play("goat").message)
+        self.assertIsNone(self.play("goat"))  # wrong first letter = chat
         self.assertIn("Từ không tồn tại trong từ điển Tiếng Anh", self.play("eqqq").message)
         self.assertIn("Từ tiếp theo phải bắt đầu bằng chữ: `g`", self.play("egg").message)
 

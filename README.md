@@ -95,7 +95,8 @@ Vietnamese aliases work only with the prefix; slash commands keep their English 
   previous word. A word cannot be used twice in a round (the starter word counts as used).
 - Markdown, trailing punctuation, capitals and accents are ignored: `**Apple!**` → `apple`, `café` → `cafe`.
 - Messages with spaces, apostrophes, hyphens or digits (`don't`, `x-ray`, `abc1`, `hello there`) are treated
-  as chat and ignored.
+  as chat and ignored. So is a single word that does not start with the required letter (`thanks`, `roi`),
+  with no reaction and no stat. A word with the right first letter that is not in the dictionary still gets ❌.
 - Offensive words (slurs, swear words, sexual terms and their common forms) are banned. The bot reacts ⚠️
   and posts a warning to the player that is not auto-deleted. The word is not accepted, the chain does not
   move, the player's cooldown is not used, and it counts as a wrong answer in the English stats.
