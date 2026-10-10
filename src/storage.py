@@ -1,4 +1,4 @@
-"""SQLite storage: active game, per-language player stats, hints and custom dictionary edits."""
+"""SQLite storage: one game per channel, per-language player stats, hints and custom dictionary edits."""
 import sqlite3
 from pathlib import Path
 
@@ -7,6 +7,10 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS active_game (
     id         INTEGER PRIMARY KEY CHECK (id = 1),
     channel_id INTEGER NOT NULL,
+    state      TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS channel_games (
+    channel_id INTEGER PRIMARY KEY,
     state      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS players (
@@ -38,7 +42,7 @@ CREATE TABLE IF NOT EXISTS hint_usage (
 
 _STAT_FIELDS = {"correct", "wrong", "wins"}
 _LANGUAGES = {"en", "vi"}  # game languages with their own stats (kept here: no import of word_chain)
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class GameStore:
@@ -52,19 +56,31 @@ class GameStore:
         self._migrate()
 
     def _migrate(self) -> None:
-        """v0 -> v1: copy the old combined stats (players) into player_stats as Vietnamese.
+        """Bring an older database up to SCHEMA_VERSION in one transaction.
 
+        v0 -> v1: copy the old combined stats (players) into player_stats as Vietnamese.
         The players table is kept as it was and is no longer written.
+        v1 -> v2: move the single saved game (active_game) into channel_games.
+        The active_game table is kept empty and is no longer written.
+        A failing step rolls back every step.
         """
         if self.conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
             return
         try:
             self.conn.execute("BEGIN IMMEDIATE")
-            if self.conn.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
+            version = self.conn.execute("PRAGMA user_version").fetchone()[0]
+            if version < 1:
                 self.conn.execute(
                     "INSERT OR IGNORE INTO player_stats (user_id, language, correct, wrong, wins) "
                     "SELECT user_id, 'vi', correct, wrong, wins FROM players"
                 )
+            if version < 2:
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO channel_games (channel_id, state) "
+                    "SELECT channel_id, state FROM active_game"
+                )
+                self.conn.execute("DELETE FROM active_game")
+            if version < SCHEMA_VERSION:
                 self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.conn.commit()
         except BaseException:
@@ -76,21 +92,28 @@ class GameStore:
         if language not in _LANGUAGES:
             raise ValueError(language)
 
-    # ---------- active game ----------
+    # ---------- channel games ----------
+    # One saved game per channel.
     def save_game(self, channel_id: int, state_json: str) -> None:
         self.conn.execute(
-            "INSERT INTO active_game (id, channel_id, state) VALUES (1, ?, ?) "
-            "ON CONFLICT(id) DO UPDATE SET channel_id = excluded.channel_id, state = excluded.state",
+            "INSERT INTO channel_games (channel_id, state) VALUES (?, ?) "
+            "ON CONFLICT(channel_id) DO UPDATE SET state = excluded.state",
             (channel_id, state_json),
         )
         self.conn.commit()
 
-    def load_game(self) -> tuple[int, str] | None:
-        row = self.conn.execute("SELECT channel_id, state FROM active_game WHERE id = 1").fetchone()
-        return (row["channel_id"], row["state"]) if row else None
+    def load_game(self, channel_id: int) -> str | None:
+        row = self.conn.execute(
+            "SELECT state FROM channel_games WHERE channel_id = ?", (channel_id,)
+        ).fetchone()
+        return row["state"] if row else None
 
-    def delete_game(self) -> None:
-        self.conn.execute("DELETE FROM active_game")
+    def load_games(self) -> list[tuple[int, str]]:
+        rows = self.conn.execute("SELECT channel_id, state FROM channel_games ORDER BY channel_id").fetchall()
+        return [(row["channel_id"], row["state"]) for row in rows]
+
+    def delete_game(self, channel_id: int) -> None:
+        self.conn.execute("DELETE FROM channel_games WHERE channel_id = ?", (channel_id,))
         self.conn.commit()
 
     # ---------- player stats ----------

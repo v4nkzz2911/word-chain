@@ -127,6 +127,15 @@ class WordChainState:
         return cls(**json.loads(raw))
 
 
+@dataclass
+class ChannelSession:
+    """The game running in one channel, with that channel's skip votes and cooldowns."""
+
+    game: WordChainState
+    skip_votes: set[int] = field(default_factory=set)  # players voting to skip the current word
+    last_answer_at: dict[int, float] = field(default_factory=dict)  # user_id -> time.monotonic()
+
+
 class WordChainGameManager:
     COOLDOWN_SECONDS = 5.0
     HINTS_PER_DAY = 5
@@ -142,15 +151,12 @@ class WordChainGameManager:
         vi_dictionary: VietnameseDictionary | None = None,
         en_dictionary: EnglishDictionary | None = None,
     ) -> None:
-        self._active_channel_id: int | None = None
-        self._active_game: WordChainState | None = None
-        self._last_answer_at: dict[tuple[int, int], float] = {}
+        self._sessions: dict[int, ChannelSession] = {}  # channel_id -> its running game
         normalized_default = self.normalize_language(default_language)
         self._default_language = normalized_default or "en"
         normalized_ui = self.normalize_language(ui_language) if ui_language is not None else None
         self._ui_language = normalized_ui or self._default_language
         self._hints_used: dict[tuple[int, str], int] = {}  # used only without a store
-        self._skip_votes: set[int] = set()  # players voting to skip the current word
         self._store = store
         self._vi_dictionary = (
             vi_dictionary
@@ -164,15 +170,20 @@ class WordChainGameManager:
         )
 
         if self._store is not None:
-            saved = self._store.load_game()
-            if saved is not None:
-                self._active_channel_id, state_json = saved
-                self._active_game = WordChainState.from_json(state_json)
-                if self._active_game.language == "vi":
-                    # Keys may come from an older normalization: rebuild the one that matters.
-                    self._active_game.expected_start_key = syllable_key(self._active_game.expected_start_word)
-                elif self._active_game.language == "en":
-                    self._migrate_english_state()
+            for channel_id, state_json in self._store.load_games():
+                try:
+                    game = WordChainState.from_json(state_json)
+                    if game.language == "vi":
+                        # Keys may come from an older normalization: rebuild the one that matters.
+                        game.expected_start_key = syllable_key(game.expected_start_word)
+                    elif game.language == "en" and not self._migrate_english_state(channel_id, game):
+                        continue
+                except (ValueError, TypeError):
+                    # One unreadable row must not block the games of the other channels.
+                    logger.warning("Dropping an unreadable saved game in channel %s", channel_id, exc_info=True)
+                    self._store.delete_game(channel_id)
+                    continue
+                self._sessions[channel_id] = ChannelSession(game)
 
     @property
     def is_vietnamese_ui(self) -> bool:
@@ -186,22 +197,23 @@ class WordChainGameManager:
     def en_dictionary(self) -> EnglishDictionary:
         return self._en_dictionary
 
-    def _migrate_english_state(self) -> None:
-        """Games saved by the old phrase-based English mode continue from the last letter."""
-        game = self._active_game
+    def _migrate_english_state(self, channel_id: int, game: WordChainState) -> bool:
+        """Games saved by the old phrase-based English mode continue from the last letter.
+
+        Returns False when the game cannot be resumed (its saved row is deleted).
+        """
         key = game.expected_start_key
         if len(key) == 1 and "a" <= key <= "z":
-            return
+            return True
         letter = last_letter(game.expected_start_word) or last_letter(game.current_phrase)
         if letter is None:
             logger.warning("Dropping a saved English game that cannot be resumed: %r", game.current_phrase)
-            self._active_channel_id = None
-            self._active_game = None
-            self._save()
-            return
+            self._store.delete_game(channel_id)
+            return False
         game.expected_start_word = letter
         game.expected_start_key = letter
-        self._save()
+        self._store.save_game(channel_id, game.to_json())
+        return True
 
     def _tr(self, en: str, vi: str) -> str:
         return vi if self.is_vietnamese_ui else en
@@ -335,13 +347,15 @@ class WordChainGameManager:
             used={starter: None},
         )
 
-    def _save(self) -> None:
+    def _save(self, channel_id: int) -> None:
+        """Save the channel's game, or delete its saved row when the channel has no game."""
         if self._store is None:
             return
-        if self._active_game is None or self._active_channel_id is None:
-            self._store.delete_game()
+        session = self._sessions.get(channel_id)
+        if session is None:
+            self._store.delete_game(channel_id)
         else:
-            self._store.save_game(self._active_channel_id, self._active_game.to_json())
+            self._store.save_game(channel_id, session.game.to_json())
 
     def _bump(self, user_id: int, stat: str, language: str) -> None:
         """Count a stat for the game language: English and Vietnamese stats are separate."""
@@ -402,10 +416,12 @@ class WordChainGameManager:
         )
 
     def start_game(self, channel_id: int, language: str | None = None) -> tuple[bool, str]:
-        if self._active_game is not None:
+        if channel_id in self._sessions:
             return False, self._tr(
-                "❌ **A word-chain game is already active**\n> Stop the current game before starting a new one.",
-                "❌ **Đã có trò chơi nối từ đang hoạt động**\n> Hãy dừng trò chơi hiện tại trước khi bắt đầu trò mới.",
+                "❌ **A word-chain game is already running in this channel**\n"
+                "> Stop the current game before starting a new one.",
+                "❌ **Kênh này đã có trò chơi nối từ đang hoạt động**\n"
+                "> Hãy dừng trò chơi hiện tại trước khi bắt đầu trò mới.",
             )
 
         normalized_language = self.normalize_language(language)
@@ -422,27 +438,18 @@ class WordChainGameManager:
                 "❌ **Không có từ bắt đầu phù hợp**\n> Không tìm thấy từ hợp lệ cho ngôn ngữ đã chọn.",
             )
 
-        self._active_channel_id = channel_id
-        self._active_game = game
-        self._last_answer_at.clear()
-        self._skip_votes.clear()
-        self._save()
+        self._sessions[channel_id] = ChannelSession(game)
+        self._save(channel_id)
         return True, self._round_intro(
             game, self._tr("✅ **Word-chain game started**", "✅ **Trò chơi nối từ đã bắt đầu**")
         )
 
     def stop_game(self, channel_id: int) -> tuple[bool, str]:
-        game = self._active_game
+        game = self.game_for(channel_id)
         if game is None:
             return False, self._tr(
                 "❌ **No active word-chain game**\n> There is no running game in this channel.",
                 "❌ **Không có trò chơi nối từ nào đang hoạt động**\n> Trong kênh này hiện chưa có trò chơi nào.",
-            )
-
-        if self._active_channel_id != channel_id:
-            return False, self._tr(
-                "❌ **The active game is in another channel**\n> Stop it from the channel where it started.",
-                "❌ **Trò chơi đang ở kênh khác**\n> Hãy dừng trò chơi tại kênh đã bắt đầu nó.",
             )
 
         summary = self._tr(
@@ -464,28 +471,24 @@ class WordChainGameManager:
                     f"\n> Có thể nối bằng: `{hint}`",
                 )
 
-        self._active_channel_id = None
-        self._active_game = None
-        self._last_answer_at.clear()
-        self._skip_votes.clear()
-        self._save()
+        del self._sessions[channel_id]
+        self._save(channel_id)
         return True, self._tr("✅ **Word-chain game stopped**\n", "✅ **Đã dừng trò chơi nối từ**\n") + summary
 
     def has_game(self, channel_id: int) -> bool:
-        return self._active_game is not None and self._active_channel_id == channel_id
+        return channel_id in self._sessions
+
+    def game_for(self, channel_id: int) -> WordChainState | None:
+        """The game running in this channel, if any. Each channel has its own game."""
+        session = self._sessions.get(channel_id)
+        return session.game if session is not None else None
 
     def game_status(self, channel_id: int) -> tuple[bool, str]:
-        game = self._active_game
+        game = self.game_for(channel_id)
         if game is None:
             return False, self._tr(
                 "❌ **No active word-chain game in this channel**\n> There is no running game in this channel.",
                 "❌ **Không có trò chơi nối từ nào đang hoạt động**\n> Trong kênh này hiện chưa có trò chơi nào.",
-            )
-
-        if self._active_channel_id != channel_id:
-            return False, self._tr(
-                "❌ **The active word-chain game is running in another channel**",
-                "❌ **Trò chơi nối từ đang chạy ở kênh khác**",
             )
 
         language_label = self._label_for_language(game.language)
@@ -538,8 +541,8 @@ class WordChainGameManager:
             self._hints_used[(user_id, day)] = self._hints_used.get((user_id, day), 0) + 1
 
     def give_hint(self, channel_id: int, user_id: int) -> tuple[bool, str]:
-        game = self._active_game
-        if game is None or self._active_channel_id != channel_id:
+        game = self.game_for(channel_id)
+        if game is None:
             return False, self._tr(
                 "❌ **No active word-chain game in this channel**",
                 "❌ **Không có trò chơi nối từ nào đang hoạt động trong kênh này**",
@@ -603,22 +606,23 @@ class WordChainGameManager:
 
         Returns (SkipStatus, message).
         """
-        game = self._active_game
-        if game is None or self._active_channel_id != channel_id:
+        session = self._sessions.get(channel_id)
+        if session is None:
             return SkipStatus.ERROR, self._tr(
                 "❌ **No active word-chain game in this channel**",
                 "❌ **Không có trò chơi nối từ nào đang hoạt động trong kênh này**",
             )
 
+        game = session.game
         needed = self.SKIP_VOTES_NEEDED
-        if user_id in self._skip_votes:
+        if user_id in session.skip_votes:
             return SkipStatus.ERROR, self._tr(
-                f"ℹ️ **You already voted to skip** ({len(self._skip_votes)}/{needed})",
-                f"ℹ️ **Bạn đã bỏ phiếu bỏ qua rồi** ({len(self._skip_votes)}/{needed})",
+                f"ℹ️ **You already voted to skip** ({len(session.skip_votes)}/{needed})",
+                f"ℹ️ **Bạn đã bỏ phiếu bỏ qua rồi** ({len(session.skip_votes)}/{needed})",
             )
 
-        self._skip_votes.add(user_id)
-        votes = len(self._skip_votes)
+        session.skip_votes.add(user_id)
+        votes = len(session.skip_votes)
         if votes < needed:
             missing = needed - votes
             return SkipStatus.VOTED, self._tr(
@@ -651,23 +655,23 @@ class WordChainGameManager:
                     f"\n> Có thể nối bằng: `{answer}`",
                 )
 
+        # A new round gets a fresh session: no votes, no cooldowns.
         new_game = self._new_state(game.language)
-        self._skip_votes.clear()
-        self._last_answer_at.clear()
         if new_game is None:
-            self._active_channel_id = None
-            self._active_game = None
-            self._save()
+            del self._sessions[channel_id]
+            self._save(channel_id)
             return SkipStatus.SKIPPED, skip_text
-        self._active_game = new_game
-        self._save()
+        self._sessions[channel_id] = ChannelSession(new_game)
+        self._save(channel_id)
         return SkipStatus.SKIPPED, skip_text + "\n\n" + self._round_intro(
             new_game, self._tr("🎮 **New round!**", "🎮 **Lượt chơi mới!**")
         )
 
     # ---------- turns ----------
-    def _check_cooldown(self, key: tuple[int, int], user_name: str, now: float) -> PhraseResult | None:
-        last_answer_at = self._last_answer_at.get(key)
+    def _check_cooldown(
+        self, session: ChannelSession, user_id: int, user_name: str, now: float
+    ) -> PhraseResult | None:
+        last_answer_at = session.last_answer_at.get(user_id)
         if last_answer_at is not None:
             elapsed = now - last_answer_at
             if elapsed < self.COOLDOWN_SECONDS:
@@ -694,24 +698,24 @@ class WordChainGameManager:
 
     def _accept(
         self,
-        game: WordChainState,
+        session: ChannelSession,
         used_key: str,
         phrase: str,
         last_word: str,
         last_key: str,
-        key: tuple[int, int],
         user_id: int,
         user_name: str,
         now: float,
     ) -> None:
+        game = session.game
         game.current_phrase = phrase
         game.expected_start_word = last_word
         game.expected_start_key = last_key
         game.used[used_key] = user_name
         game.last_player_id = user_id
         game.turns += 1
-        self._last_answer_at[key] = now
-        self._skip_votes.clear()  # the chain moved on, so earlier skip votes no longer apply
+        session.last_answer_at[user_id] = now
+        session.skip_votes.clear()  # the chain moved on, so earlier skip votes no longer apply
         self._bump(user_id, "correct", game.language)
 
     def handle_player_phrase(
@@ -722,14 +726,15 @@ class WordChainGameManager:
         text: str,
     ) -> PhraseResult | None:
         """Handle a message in the game channel. Returns None when the message is ignored."""
-        game = self._active_game
-        if game is None or self._active_channel_id != channel_id:
+        session = self._sessions.get(channel_id)
+        if session is None:
             return None
 
+        game = session.game
         if game.language == "vi":
-            result = self._handle_vietnamese_phrase(game, channel_id, user_id, user_name, text)
+            result = self._handle_vietnamese_phrase(session, channel_id, user_id, user_name, text)
         else:
-            result = self._handle_english_phrase(game, channel_id, user_id, user_name, text)
+            result = self._handle_english_phrase(session, channel_id, user_id, user_name, text)
 
         if result is not None and result.status in (
             PhraseStatus.WRONG_START,
@@ -739,17 +744,18 @@ class WordChainGameManager:
         ):
             self._bump(user_id, "wrong", game.language)
         if result is not None and result.accepted:
-            self._save()
+            self._save(channel_id)
         return result
 
     def _handle_vietnamese_phrase(
         self,
-        game: WordChainState,
+        session: ChannelSession,
         channel_id: int,
         user_id: int,
         user_name: str,
         text: str,
     ) -> PhraseResult | None:
+        game = session.game
         # Anything that is not exactly 2 syllables is treated as chat and ignored.
         parsed = parse_word(text)
         if parsed is None or not len(self._vi_dictionary):
@@ -759,8 +765,7 @@ class WordChainGameManager:
         last_word = display.split(" ")[-1]
 
         now = time.monotonic()
-        key = (channel_id, user_id)
-        cooldown_error = self._check_cooldown(key, user_name, now)
+        cooldown_error = self._check_cooldown(session, user_id, user_name, now)
         if cooldown_error is not None:
             return cooldown_error
 
@@ -786,7 +791,7 @@ class WordChainGameManager:
         if word_key in game.used:
             return PhraseResult(PhraseStatus.USED, self._used_message(game.used[word_key]))
 
-        self._accept(game, word_key, display, last_word, last_key, key, user_id, user_name, now)
+        self._accept(session, word_key, display, last_word, last_key, user_id, user_name, now)
 
         if self._vi_dictionary.has_continuation(last_key, game.used):
             return PhraseResult(
@@ -807,16 +812,18 @@ class WordChainGameManager:
             f"> Không còn từ nào bắt đầu bằng `{last_word}`.\n"
             f"> Lượt chơi kéo dài **{game.turns}** lượt nối.",
         )
-        new_game = self._new_state(game.language)
+        return self._finish_round(channel_id, game.language, win_text)
+
+    def _finish_round(self, channel_id: int, language: str, win_text: str) -> PhraseResult:
+        """After a win: a new round with a fresh session in this channel, or the end of its game."""
+        new_game = self._new_state(language)
         if new_game is None:
-            self._active_channel_id = None
-            self._active_game = None
-            self._save()
+            del self._sessions[channel_id]
+            self._save(channel_id)
             return PhraseResult(PhraseStatus.WIN, win_text)
 
-        self._active_game = new_game
-        self._last_answer_at.clear()
-        self._skip_votes.clear()
+        self._sessions[channel_id] = ChannelSession(new_game)
+        self._save(channel_id)
         return PhraseResult(
             PhraseStatus.WIN,
             win_text + "\n\n" + self._round_intro(new_game, self._tr("🎮 **New round!**", "🎮 **Lượt chơi mới!**")),
@@ -824,12 +831,13 @@ class WordChainGameManager:
 
     def _handle_english_phrase(
         self,
-        game: WordChainState,
+        session: ChannelSession,
         channel_id: int,
         user_id: int,
         user_name: str,
         text: str,
     ) -> PhraseResult | None:
+        game = session.game
         # Anything that is not one English word of 3+ letters is treated as chat and ignored.
         word = parse_en_word(text)
         if word is None or not len(self._en_dictionary):
@@ -854,8 +862,7 @@ class WordChainGameManager:
             return None
 
         now = time.monotonic()
-        key = (channel_id, user_id)
-        cooldown_error = self._check_cooldown(key, user_name, now)
+        cooldown_error = self._check_cooldown(session, user_id, user_name, now)
         if cooldown_error is not None:
             return cooldown_error
 
@@ -873,7 +880,7 @@ class WordChainGameManager:
             return PhraseResult(PhraseStatus.USED, self._used_message(game.used[word]))
 
         last = word[-1]
-        self._accept(game, word, word, last, last, key, user_id, user_name, now)
+        self._accept(session, word, word, last, last, user_id, user_name, now)
 
         if self._en_dictionary.has_continuation(last, game.used):
             return PhraseResult(
@@ -894,20 +901,7 @@ class WordChainGameManager:
             f"> Không còn từ nào bắt đầu bằng chữ `{last}`.\n"
             f"> Lượt chơi kéo dài **{game.turns}** lượt nối.",
         )
-        new_game = self._new_state(game.language)
-        if new_game is None:
-            self._active_channel_id = None
-            self._active_game = None
-            self._save()
-            return PhraseResult(PhraseStatus.WIN, win_text)
-
-        self._active_game = new_game
-        self._last_answer_at.clear()
-        self._skip_votes.clear()
-        return PhraseResult(
-            PhraseStatus.WIN,
-            win_text + "\n\n" + self._round_intro(new_game, self._tr("🎮 **New round!**", "🎮 **Lượt chơi mới!**")),
-        )
+        return self._finish_round(channel_id, game.language, win_text)
 
     # ---------- stats ----------
     def player_profile(self, user_id: int, user_name: str) -> str:
@@ -943,14 +937,19 @@ class WordChainGameManager:
             f"> 📊 **Hạng:** `{rank_text}`",
         )
 
-    def leaderboard(self, language: str | None = None, limit: int = 20) -> str:
-        """Top players of one language: the given one, else the running game's, else the default."""
+    def _channel_language(self, channel_id: int | None) -> str:
+        """Language of the game running in this channel, else the default language."""
+        game = self.game_for(channel_id) if channel_id is not None else None
+        return game.language if game is not None else self._default_language
+
+    def leaderboard(self, language: str | None = None, limit: int = 20, channel_id: int | None = None) -> str:
+        """Top players of one language: the given one, else the channel game's, else the default."""
         if language is not None:
             selected = self.normalize_language(language)
             if selected is None:
                 return self._unsupported_language_message()
         else:
-            selected = self._active_game.language if self._active_game is not None else self._default_language
+            selected = self._channel_language(channel_id)
         label = self._label_for_language(selected)
         rows = self._store.top(selected, limit) if self._store is not None else []
         if not rows:
@@ -973,16 +972,16 @@ class WordChainGameManager:
         ) + "\n".join(lines)
 
     # ---------- dictionary tools ----------
-    def check_word(self, text: str, language: str | None = None) -> tuple[bool, str]:
+    def check_word(self, text: str, language: str | None = None, channel_id: int | None = None) -> tuple[bool, str]:
         if language is None:
             # Route by shape like add_word: one a-z token -> English, several tokens ->
-            # Vietnamese; anything else uses the active game's (or the default) language.
+            # Vietnamese; anything else uses the channel game's (or the default) language.
             if parse_en_word(text, fold_accents=False) is not None:
                 language = "en"
             elif any(ch.isspace() for ch in text.strip()):
                 language = "vi"
             else:
-                language = self._active_game.language if self._active_game is not None else self._default_language
+                language = self._channel_language(channel_id)
 
         if language == "vi":
             parsed = parse_word(text)

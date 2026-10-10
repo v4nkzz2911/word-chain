@@ -78,7 +78,7 @@ def build_help_text(prefix: str, bot_language: str) -> str:
             "- Chấp nhận cả hai kiểu bỏ dấu: `hoà`/`hòa`, `thuỷ`/`thủy`, và cả i/y: `mỹ`/`mĩ`, `kỳ`/`kì`\n"
             "- Mỗi người chơi có cooldown 5 giây giữa hai lần trả lời hợp lệ\n"
             "- Tin nhắn không phải từ 2 âm tiết được coi là trò chuyện và bị bỏ qua (Tiếng Việt)\n"
-            "- Mỗi lúc chỉ chạy 1 trò chơi\n"
+            "- Mỗi kênh chỉ chạy 1 trò chơi\n"
             "- Bot thả ✅ đúng, ❌ sai, ⏳ cooldown, ⚠️ từ bị cấm\n\n"
             "-# Nguồn từ điển: Hồ Ngọc Đức (vietnamese-wordlist) · dữ liệu từ điển của @minhqnd, "
             "<https://dict.minhqnd.com> (CC BY-SA 4.0) · ENABLE (public domain)"
@@ -114,7 +114,7 @@ def build_help_text(prefix: str, bot_language: str) -> str:
         "- Start with the last letter (English) or last syllable (Vietnamese) of the previous word\n"
         "- Words must be in the dictionary and can't be reused\n"
         "- Cooldown: 5 seconds between accepted answers per user\n"
-        "- One game at a time\n"
+        "- One game per channel\n"
         "- The bot reacts ✅ correct, ❌ wrong, ⏳ cooldown, ⚠️ banned word\n\n"
         "-# English dictionary: ENABLE (public domain) · "
         "Vietnamese dictionary: Hồ Ngọc Đức (vietnamese-wordlist) · dictionary data by @minhqnd, "
@@ -374,10 +374,13 @@ def build_bot() -> tuple[commands.Bot, str]:
 
     @bot.command(name="chainrank", aliases=["chaintop", "bxh"])
     async def chain_rank(ctx: commands.Context, *, language: str | None = None) -> None:
-        await ctx.send(word_chain.leaderboard(language), allowed_mentions=discord.AllowedMentions.none())
+        await ctx.send(
+            word_chain.leaderboard(language, channel_id=ctx.channel.id),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     @bot.tree.command(name="chainrank", description="Show the word-chain top 20 leaderboard for one language")
-    @app_commands.describe(language="Optional language (default: the running game's language, else the bot language)")
+    @app_commands.describe(language="Optional language (default: this channel's game language, else the bot language)")
     @app_commands.choices(
         language=[
             app_commands.Choice(name="English", value="en"),
@@ -390,18 +393,19 @@ def build_bot() -> tuple[commands.Bot, str]:
     ) -> None:
         selected_language = language.value if language is not None else None
         await interaction.response.send_message(
-            word_chain.leaderboard(selected_language), allowed_mentions=discord.AllowedMentions.none()
+            word_chain.leaderboard(selected_language, channel_id=interaction.channel_id),
+            allowed_mentions=discord.AllowedMentions.none(),
         )
 
     @bot.command(name="chaincheck", aliases=["kiemtra"])
     async def chain_check(ctx: commands.Context, *, word: str) -> None:
-        _, response = word_chain.check_word(word)
+        _, response = word_chain.check_word(word, channel_id=ctx.channel.id)
         await ctx.send(response)
 
     @bot.tree.command(name="chaincheck", description="Check whether a word is in the dictionary")
     @app_commands.describe(word="Word to check (English: one word; Vietnamese: exactly 2 syllables)")
     async def slash_chain_check(interaction: discord.Interaction, word: str) -> None:
-        _, response = word_chain.check_word(word)
+        _, response = word_chain.check_word(word, channel_id=interaction.channel_id)
         await interaction.response.send_message(response)
 
     @bot.command(name="chainadd", aliases=["themtu", "them-tu"])

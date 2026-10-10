@@ -46,9 +46,9 @@ python src/bot.py
 - Vote to skip a word nobody can continue: click the ⏭️ **Skip** button under the game messages, or use
   `/chainskip` / `<prefix>chainskip` (alias `<prefix>boqua`, `<prefix>skip`).
   When 2 different players vote, the bot reveals a possible answer and starts a new round (nobody wins).
-  Votes reset when someone answers correctly.
+  Votes count per channel and reset when someone answers correctly.
 - Player profile: `/chainme [member]` or `<prefix>chainme [member]` (alias `<prefix>hoso`). Shows English and Vietnamese stats separately, each with its own rank.
-- Top 20 leaderboard, one per language: `/chainrank [language]` or `<prefix>chainrank [en|vi]` (aliases `<prefix>chaintop`, `<prefix>bxh`). Without a language it shows the running game's language, otherwise `DISCORD_BOT_LANGUAGE`.
+- Top 20 leaderboard, one per language: `/chainrank [language]` or `<prefix>chainrank [en|vi]` (aliases `<prefix>chaintop`, `<prefix>bxh`). Without a language it shows the language of the game running in that channel, otherwise `DISCORD_BOT_LANGUAGE`.
 - Check a word: `/chaincheck <word>` or `<prefix>chaincheck <word>` (alias `<prefix>kiemtra`)
 - Add / remove a word (Manage Server permission): `/chainadd <word>`, `/chainremove <word>`
   (aliases `<prefix>them-tu` / `<prefix>themtu`, `<prefix>xoa-tu` / `<prefix>xoatu`).
@@ -60,13 +60,13 @@ Vietnamese aliases work only with the prefix; slash commands keep their English 
 
 ## Word-chain mini game
 
-- Only one word-chain game can run at a time.
+- One game per channel; different channels can run games (any language) at the same time.
 - Run `!chainstart` and the bot sends a random starter word from dictionary.
 - You can force language when starting: `!chainstart en` or `!chainstart vi`.
 - If you do not pass a language, the game uses `DISCORD_BOT_LANGUAGE`.
 - Players can answer several times in a row, but each user has a 5-second cooldown between accepted answers.
 - The bot reacts ✅ (correct), ❌ (wrong), ⏳ (still on cooldown) or ⚠️ (offensive word, English games); error replies delete themselves after 6 seconds, but the ⚠️ warning stays.
-- The active game and player stats are saved in `data/word_chain.db`, so a restart does not lose them.
+- The running games (one per channel) and player stats are saved in `data/word_chain.db`, so a restart does not lose them. Cooldowns and pending skip votes are not saved.
 - Stats (correct, wrong, wins) and ranks are kept separately for English and Vietnamese; the daily hint limit is shared. On the first start after this update, stats from older versions are copied once into the Vietnamese stats; the old `players` table is left untouched.
 
 ### Vietnamese (`vi`)

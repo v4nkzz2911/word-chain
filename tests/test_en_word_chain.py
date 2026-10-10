@@ -23,6 +23,7 @@ from vi_dictionary import VietnameseDictionary  # noqa: E402
 from vi_text import parse_word  # noqa: E402
 from word_chain import (  # noqa: E402
     VIETNAM_TZ,
+    ChannelSession,
     PhraseStatus,
     SkipStatus,
     WordChainGameManager,
@@ -83,10 +84,7 @@ class BaseCase(unittest.TestCase):
             expected_start_key=letter,
             used=dict(used) if used is not None else {phrase: None},
         )
-        self.mgr._active_channel_id = CH
-        self.mgr._active_game = game
-        self.mgr._last_answer_at.clear()
-        self.mgr._skip_votes.clear()
+        self.mgr._sessions[CH] = ChannelSession(game)
         return game
 
     def set_vi_state(self, word="viên", phrase="sinh viên", used=None) -> WordChainState:
@@ -99,10 +97,7 @@ class BaseCase(unittest.TestCase):
             expected_start_key=syllable_key(word),
             used=dict(used) if used is not None else {parse_word(phrase)[0]: None},
         )
-        self.mgr._active_channel_id = CH
-        self.mgr._active_game = game
-        self.mgr._last_answer_at.clear()
-        self.mgr._skip_votes.clear()
+        self.mgr._sessions[CH] = ChannelSession(game)
         return game
 
     def play(self, text, user_id=1, name="Bob"):
@@ -158,13 +153,13 @@ class GameplayTests(BaseCase):
         result = self.play("egg")
         self.assertEqual(result.status, PhraseStatus.OK)
         self.assertIn("`g`", result.message)
-        game = self.mgr._active_game
+        game = self.mgr.game_for(CH)
         self.assertEqual(game.expected_start_key, "g")
         self.assertEqual(game.expected_start_word, "g")
         self.assertEqual(game.turns, 1)
         self.assertEqual(game.used["egg"], "Bob")
         self.assertEqual(self.store.get_player(1, "en")["correct"], 1)
-        saved = json.loads(self.store.load_game()[1])
+        saved = json.loads(self.store.load_game(CH))
         self.assertIn("egg", saved["used"])
         self.assertEqual(saved["expected_start_key"], "g")
 
@@ -184,9 +179,9 @@ class GameplayTests(BaseCase):
             with self.subTest(text=text):
                 self.assertIsNone(self.play(text))
         self.assertEqual(self.store.get_player(1, "en"), {"correct": 0, "wrong": 0, "wins": 0})
-        self.assertNotIn((CH, 1), self.mgr._last_answer_at)
-        self.assertEqual(self.mgr._active_game.expected_start_key, "g")
-        self.assertEqual(self.mgr._active_game.turns, 0)
+        self.assertNotIn(1, self.mgr._sessions[CH].last_answer_at)
+        self.assertEqual(self.mgr.game_for(CH).expected_start_key, "g")
+        self.assertEqual(self.mgr.game_for(CH).turns, 0)
 
     def test_03b_wrong_start_ignored_during_cooldown(self):
         self.set_en_state()
@@ -220,21 +215,21 @@ class GameplayTests(BaseCase):
                 self.assertIsNone(self.play(text))
         self.assertEqual(self.store.get_player(1, "en"), {"correct": 0, "wrong": 0, "wins": 0})
         self.assertEqual(self.store.get_player(1, "vi"), {"correct": 0, "wrong": 0, "wins": 0})
-        self.assertEqual(self.mgr._active_game.turns, 0)
+        self.assertEqual(self.mgr.game_for(CH).turns, 0)
 
     def test_07_markdown_answer(self):
         self.set_en_state()
         result = self.play("**Egg!**")
         self.assertEqual(result.status, PhraseStatus.OK)
-        self.assertEqual(self.mgr._active_game.current_phrase, "egg")
-        self.assertIn("egg", self.mgr._active_game.used)
+        self.assertEqual(self.mgr.game_for(CH).current_phrase, "egg")
+        self.assertIn("egg", self.mgr.game_for(CH).used)
 
     def test_08_win_game_ends(self):
         en = make_en(["yak", "kiwi"])
         self.mgr = self.make_manager(self.store, en, self.vi)
         self.set_en_state("y", "toy", {"toy": None})
         self.assertEqual(self.play("yak").status, PhraseStatus.OK)
-        self.assertEqual(self.mgr._active_game.expected_start_key, "k")
+        self.assertEqual(self.mgr.game_for(CH).expected_start_key, "k")
         result = self.play("kiwi", user_id=2, name="Ann")
         self.assertEqual(result.status, PhraseStatus.WIN)
         self.assertIn("🏆", result.message)
@@ -243,7 +238,7 @@ class GameplayTests(BaseCase):
         self.assertEqual(self.store.get_player(2, "en")["correct"], 1)
         # No starter word in this tiny dictionary: the game ends.
         self.assertFalse(self.mgr.has_game(CH))
-        self.assertIsNone(self.store.load_game())
+        self.assertIsNone(self.store.load_game(CH))
 
     def test_08b_win_new_round(self):
         en = make_en(EN_WORDS + ["kiwi"])
@@ -253,11 +248,11 @@ class GameplayTests(BaseCase):
         self.assertEqual(result.status, PhraseStatus.WIN)
         self.assertIn("New round", result.message)
         self.assertTrue(self.mgr.has_game(CH))
-        game = self.mgr._active_game
+        game = self.mgr.game_for(CH)
         self.assertEqual(game.turns, 0)
         self.assertEqual(len(game.expected_start_key), 1)
         self.assertIn(game.current_phrase, game.used)
-        self.assertEqual(self.mgr._last_answer_at, {})
+        self.assertEqual(self.mgr._sessions[CH].last_answer_at, {})
 
     def test_09_empty_dictionary_ignores(self):
         self.mgr = self.make_manager(self.store, EnglishDictionary(), self.vi)
@@ -274,7 +269,7 @@ class GameplayTests(BaseCase):
     def test_10b_start_small_dictionary(self):
         ok, message = self.mgr.start_game(CH, "en")
         self.assertTrue(ok)
-        game = self.mgr._active_game
+        game = self.mgr.game_for(CH)
         self.assertEqual(game.expected_start_key, game.current_phrase[-1])
         self.assertIn(game.current_phrase, game.used)
         self.assertIn("Next word must start with the letter", message)
@@ -288,10 +283,10 @@ class GameplayTests(BaseCase):
         self.assertGreaterEqual(en.build_indexes(), 200)
         self.mgr = self.make_manager(self.store, en, self.vi)
         for _ in range(20):
-            self.mgr._active_game = None
+            self.mgr._sessions.pop(CH, None)
             ok, message = self.mgr.start_game(CH, "en")
             self.assertTrue(ok)
-            game = self.mgr._active_game
+            game = self.mgr.game_for(CH)
             starter = game.current_phrase
             self.assertTrue(4 <= len(starter) <= 8, starter)
             self.assertNotIn(starter[-1], "jqxyz")
@@ -316,11 +311,11 @@ class PersistenceTests(BaseCase):
             "last_player_id": 1,
             "turns": 3,
         })
-        game = self.mgr._active_game
+        game = self.mgr.game_for(CH)
         self.assertEqual(game.expected_start_word, "r")
         self.assertEqual(game.expected_start_key, "r")
         self.assertEqual(game.turns, 3)
-        self.assertEqual(json.loads(self.store.load_game()[1])["expected_start_key"], "r")
+        self.assertEqual(json.loads(self.store.load_game(CH))["expected_start_key"], "r")
         self.assertEqual(self.play("rabbit").status, PhraseStatus.OK)
 
     def test_13_old_state_without_key(self):
@@ -330,7 +325,7 @@ class PersistenceTests(BaseCase):
             "language": "en",
             "used": {},
         })
-        self.assertEqual(self.mgr._active_game.expected_start_key, "r")
+        self.assertEqual(self.mgr.game_for(CH).expected_start_key, "r")
 
     def test_14_unusable_state_dropped(self):
         self.mgr = self.reload({
@@ -340,17 +335,17 @@ class PersistenceTests(BaseCase):
             "expected_start_key": "123",
             "used": {},
         })
-        self.assertIsNone(self.store.load_game())
+        self.assertIsNone(self.store.load_game(CH))
         self.assertFalse(self.mgr.has_game(CH))
 
     def test_15_new_state_round_trip(self):
         ok, _ = self.mgr.start_game(CH, "en")
         self.assertTrue(ok)
-        letter = self.mgr._active_game.expected_start_key
+        letter = self.mgr.game_for(CH).expected_start_key
         reloaded = self.make_manager(self.store, self.en, self.vi)
         self.assertTrue(reloaded.has_game(CH))
-        self.assertEqual(reloaded._active_game.expected_start_key, letter)
-        self.assertEqual(reloaded._active_game.expected_start_word, letter)
+        self.assertEqual(reloaded.game_for(CH).expected_start_key, letter)
+        self.assertEqual(reloaded.game_for(CH).expected_start_word, letter)
 
 
 # ---------------------------------------------------------------- custom words
@@ -492,18 +487,18 @@ class ToolTests(BaseCase):
         )
         self.assertEqual(self.mgr.check_word("xyz abc"), (False, "❌ **xyz abc** is not in the dictionary."))
         # Single non a-z token -> language of the active game.
-        self.assertIn("one word of 3+ letters", self.mgr.check_word("ok")[1])
-        ok, message = self.mgr.check_word("Café")  # accented: not strict a-z, English game -> folded
+        self.assertIn("one word of 3+ letters", self.mgr.check_word("ok", channel_id=CH)[1])
+        ok, message = self.mgr.check_word("Café", channel_id=CH)  # accented: not strict a-z, English game -> folded
         self.assertTrue(ok)
         self.assertIn("**cafe**", message)
         self.set_vi_state()
         self.assertEqual(
-            self.mgr.check_word("học"),
+            self.mgr.check_word("học", channel_id=CH),
             (False, "❌ **A Vietnamese word must have exactly 2 syllables** (letters only)"),
         )
         # No game: default language (en), which folds accents like in play.
-        self.mgr._active_game = None
-        self.assertEqual(self.mgr.check_word("học"), (False, "❌ **hoc** is not in the dictionary."))
+        self.mgr._sessions.pop(CH, None)
+        self.assertEqual(self.mgr.check_word("học", channel_id=CH), (False, "❌ **hoc** is not in the dictionary."))
         # An explicit language is respected.
         self.assertIn("one word of 3+ letters", self.mgr.check_word("apple pie", "en")[1])
         self.assertIn("exactly 2 syllables", self.mgr.check_word("apple", "vi")[1])
@@ -520,11 +515,11 @@ class ToolTests(BaseCase):
         self.assertIn("is not in the dictionary", message)
         # Language taken from the active English game.
         self.set_en_state()
-        self.assertTrue(self.mgr.check_word("Egg")[0])
+        self.assertTrue(self.mgr.check_word("Egg", channel_id=CH)[0])
 
     def test_29_vote_skip(self):
         old = self.set_en_state()
-        self.mgr._last_answer_at[(CH, 5)] = 0.0
+        self.mgr._sessions[CH].last_answer_at[5] = 0.0
         status, _ = self.mgr.vote_skip(CH, 1, "Bob")
         self.assertEqual(status, SkipStatus.VOTED)
         status, message = self.mgr.vote_skip(CH, 2, "Ann")
@@ -534,10 +529,10 @@ class ToolTests(BaseCase):
         self.assertIsNotNone(match)
         self.assertIn(match.group(1), E_WORDS)
         self.assertIn("New round", message)
-        self.assertIsNot(self.mgr._active_game, old)
-        self.assertEqual(self.mgr._active_game.language, "en")
-        self.assertEqual(self.mgr._skip_votes, set())
-        self.assertEqual(self.mgr._last_answer_at, {})
+        self.assertIsNot(self.mgr.game_for(CH), old)
+        self.assertEqual(self.mgr.game_for(CH).language, "en")
+        self.assertEqual(self.mgr._sessions[CH].skip_votes, set())
+        self.assertEqual(self.mgr._sessions[CH].last_answer_at, {})
 
     def test_30_stop(self):
         self.set_en_state()
@@ -683,7 +678,7 @@ class OffensiveWordTests(BaseCase):
         result = self.play("shit")
         self.assertEqual(result.status, PhraseStatus.BANNED)
         self.assertFalse(result.accepted)
-        self.assertNotIn("shit", self.mgr._active_game.used)
+        self.assertNotIn("shit", self.mgr.game_for(CH).used)
 
 
 BANNED_WARNING_EN = (
@@ -735,9 +730,9 @@ class OffensiveGameplayTests(BaseCase):
 
     def test_banned_before_cooldown_and_cooldown_untouched(self):
         self.assertEqual(self.play("egg").status, PhraseStatus.OK)
-        stamp = self.mgr._last_answer_at[(CH, 1)]
+        stamp = self.mgr._sessions[CH].last_answer_at[1]
         self.assertEqual(self.play("gook").status, PhraseStatus.BANNED)
-        self.assertEqual(self.mgr._last_answer_at[(CH, 1)], stamp)
+        self.assertEqual(self.mgr._sessions[CH].last_answer_at[1], stamp)
         self.assertEqual(self.play("goat").status, PhraseStatus.COOLDOWN)
 
     def test_banned_word_forms(self):
@@ -748,7 +743,7 @@ class OffensiveGameplayTests(BaseCase):
         for word in NOT_BANNED:
             with self.subTest(word=word):
                 self.set_en_state(word[0], "x" + word[0], {"x" + word[0]: None})
-                self.mgr._last_answer_at.clear()
+                self.mgr._sessions[CH].last_answer_at.clear()
                 self.assertNotEqual(self.play(word).status, PhraseStatus.BANNED)
 
     def test_counts_as_wrong(self):
@@ -758,19 +753,19 @@ class OffensiveGameplayTests(BaseCase):
 
     def test_state_unchanged(self):
         self.assertEqual(self.mgr.vote_skip(CH, 3, "Cy")[0], SkipStatus.VOTED)
-        game = self.mgr._active_game
+        game = self.mgr.game_for(CH)
         before_json = game.to_json()
-        before_saved = self.store.load_game()
+        before_saved = self.store.load_game(CH)
         self.assertEqual(self.play("hell").status, PhraseStatus.BANNED)
-        self.assertIs(self.mgr._active_game, game)
+        self.assertIs(self.mgr.game_for(CH), game)
         self.assertEqual(game.to_json(), before_json)
         self.assertEqual(game.turns, 0)
         self.assertEqual(game.used, {"apple": None})
         self.assertEqual(game.current_phrase, "apple")
         self.assertIsNone(game.last_player_id)
-        self.assertEqual(self.store.load_game(), before_saved)
-        self.assertEqual(self.mgr._skip_votes, {3})
-        self.assertEqual(self.mgr._last_answer_at, {})
+        self.assertEqual(self.store.load_game(CH), before_saved)
+        self.assertEqual(self.mgr._sessions[CH].skip_votes, {3})
+        self.assertEqual(self.mgr._sessions[CH].last_answer_at, {})
 
     def test_can_answer_right_after(self):
         self.assertEqual(self.play("shit").status, PhraseStatus.BANNED)
@@ -902,11 +897,10 @@ class NotShownByBotTests(unittest.TestCase):
         self.assertIsNone(en.example("j", {"jewel", "jeweler"}))
 
         mgr = WordChainGameManager(store=GameStore(":memory:"), en_dictionary=en, vi_dictionary=make_vi())
-        mgr._active_channel_id = CH
-        mgr._active_game = WordChainState(
+        mgr._sessions[CH] = ChannelSession(WordChainState(
             current_phrase="egg", expected_start_word="j", language="en",
             expected_start_key="j", used={"egg": None},
-        )
+        ))
         self.assertEqual(mgr.handle_player_phrase(CH, 1, "Bob", "jews").status, PhraseStatus.OK)
 
     @unittest.skipUnless(os.environ.get("WORDCHAIN_ENABLE_PATH"), "set WORDCHAIN_ENABLE_PATH to the ENABLE file")

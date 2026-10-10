@@ -1,7 +1,8 @@
 """Isolation tests: an English game must not affect the Vietnamese game, and vice versa.
 
-The bot runs one game at a time but switches languages within the same process,
-so these tests play one language, then the other, and check nothing leaks across.
+A channel runs one game at a time but can switch languages within the same process,
+so these tests play one language, then the other, in one channel and check nothing leaks across.
+Games running in several channels at once are covered by test_multi_channel.py.
 """
 import sys
 import unittest
@@ -52,14 +53,14 @@ class CrossLanguageCase(unittest.TestCase):
         """Start an English game, then pin a known state so the script is deterministic."""
         ok, _ = self.mgr.start_game(CH, "en")
         self.assertTrue(ok)
-        g = self.mgr._active_game
+        g = self.mgr.game_for(CH)
         g.current_phrase, g.expected_start_word, g.expected_start_key = phrase, letter, letter
         g.used = {phrase: None}
 
     def force_vi(self, phrase="học sinh"):
         ok, _ = self.mgr.start_game(CH, "vi")
         self.assertTrue(ok)
-        g = self.mgr._active_game
+        g = self.mgr.game_for(CH)
         last = phrase.split(" ")[-1]
         g.current_phrase, g.expected_start_word, g.expected_start_key = phrase, last, syllable_key(last)
         g.used = {vi_key(phrase): None}
@@ -75,11 +76,11 @@ class CrossLanguageCase(unittest.TestCase):
         self.assertTrue(self.mgr.stop_game(CH)[0])
 
         self.force_vi()
-        g = self.mgr._active_game
+        g = self.mgr.game_for(CH)
         self.assertEqual(g.language, "vi")
         self.assertEqual(g.turns, 0)
         self.assertEqual(set(g.used), {vi_key("học sinh")})                           # no English words carried over
-        self.assertEqual(self.mgr._skip_votes, set())                         # English skip vote gone
+        self.assertEqual(self.mgr._sessions[CH].skip_votes, set())                         # English skip vote gone
         # user 1 answered in English a moment ago, but has no cooldown in the new Vietnamese game
         self.assertEqual(self.play("sinh viên").status, PhraseStatus.OK)
         self.assertEqual(snapshot_vi(self.vi), vi_before)
@@ -93,44 +94,44 @@ class CrossLanguageCase(unittest.TestCase):
         self.assertTrue(self.mgr.stop_game(CH)[0])
 
         self.force_en()
-        g = self.mgr._active_game
+        g = self.mgr.game_for(CH)
         self.assertEqual((g.language, g.turns, set(g.used)), ("en", 0, {"apple"}))
-        self.assertEqual(self.mgr._skip_votes, set())
+        self.assertEqual(self.mgr._sessions[CH].skip_votes, set())
         self.assertEqual(self.play("egg").status, PhraseStatus.OK)            # no Vietnamese cooldown left
         self.assertEqual(snapshot_en(self.en), en_before)
 
     def test_cannot_start_other_language_while_one_runs(self):
         self.force_en()
         self.play("egg")
-        before = self.mgr._active_game.to_json()
+        before = self.mgr.game_for(CH).to_json()
         ok, _ = self.mgr.start_game(CH, "vi")
         self.assertFalse(ok)
-        self.assertEqual(self.mgr._active_game.to_json(), before)
+        self.assertEqual(self.mgr.game_for(CH).to_json(), before)
 
         self.mgr.stop_game(CH)
         self.force_vi()
         self.play("sinh viên")
-        before = self.mgr._active_game.to_json()
+        before = self.mgr.game_for(CH).to_json()
         ok, _ = self.mgr.start_game(CH, "en")
         self.assertFalse(ok)
-        self.assertEqual(self.mgr._active_game.to_json(), before)
+        self.assertEqual(self.mgr.game_for(CH).to_json(), before)
 
     # ------------------------------------------------------------ messages of the other language
     def test_vietnamese_messages_ignored_in_english_game(self):
         self.force_en()
-        before = self.mgr._active_game.to_json()
+        before = self.mgr.game_for(CH).to_json()
         for text in ("sinh viên", "học sinh", "chào bạn nhé"):
             self.assertIsNone(self.play(text))
-        self.assertEqual(self.mgr._active_game.to_json(), before)
+        self.assertEqual(self.mgr.game_for(CH).to_json(), before)
         self.assertEqual(self.store.get_player(1, "en")["wrong"], 0)
         self.assertEqual(self.store.get_player(1, "vi")["wrong"], 0)
 
     def test_english_messages_ignored_in_vietnamese_game(self):
         self.force_vi()
-        before = self.mgr._active_game.to_json()
+        before = self.mgr.game_for(CH).to_json()
         for text in ("egg", "apple", "**Egg!**", "tiger"):
             self.assertIsNone(self.play(text))
-        self.assertEqual(self.mgr._active_game.to_json(), before)
+        self.assertEqual(self.mgr.game_for(CH).to_json(), before)
         self.assertEqual(self.store.get_player(1, "en")["wrong"], 0)
         self.assertEqual(self.store.get_player(1, "vi")["wrong"], 0)
 
@@ -139,11 +140,11 @@ class CrossLanguageCase(unittest.TestCase):
             ["apple", "egg", "goat", "tiger", "shit", "hell", "dick"]
         )
         self.force_vi()
-        before = self.mgr._active_game.to_json()
+        before = self.mgr.game_for(CH).to_json()
         for text in ("fuck", "**Fuck!**", "shit", "hell"):
             with self.subTest(text=text):
                 self.assertIsNone(self.play(text))
-        self.assertEqual(self.mgr._active_game.to_json(), before)
+        self.assertEqual(self.mgr.game_for(CH).to_json(), before)
         self.assertEqual(self.store.get_player(1, "en")["wrong"], 0)
         self.assertEqual(self.store.get_player(1, "vi")["wrong"], 0)
         # A 2-syllable answer containing an English swear word is never BANNED in Vietnamese.
@@ -162,8 +163,8 @@ class CrossLanguageCase(unittest.TestCase):
         for i, word in enumerate(("sinh viên", "viên chức", "chức năng"), start=1):
             r = self.play(word, user_id=i)
         self.assertEqual(r.status, PhraseStatus.WIN)
-        if self.mgr._active_game is not None:
-            self.assertEqual(self.mgr._active_game.language, "vi")
+        if self.mgr.game_for(CH) is not None:
+            self.assertEqual(self.mgr.game_for(CH).language, "vi")
 
     def test_english_win_starts_english_round(self):
         self.mgr._en_dictionary = self.en = make_en(["yak", "kiwi", "tiger", "rabbit", "train", "night"])
@@ -171,29 +172,29 @@ class CrossLanguageCase(unittest.TestCase):
         self.play("yak", 1)
         r = self.play("kiwi", 2)
         self.assertEqual(r.status, PhraseStatus.WIN)
-        if self.mgr._active_game is not None:
-            self.assertEqual(self.mgr._active_game.language, "en")
+        if self.mgr.game_for(CH) is not None:
+            self.assertEqual(self.mgr.game_for(CH).language, "en")
 
     # ------------------------------------------------------------ admin dictionary edits mid-game
     def test_admin_edits_during_english_game(self):
         self.force_en()
-        game_before = self.mgr._active_game.to_json()
+        game_before = self.mgr.game_for(CH).to_json()
         en_before = snapshot_en(self.en)
         self.assertTrue(self.mgr.add_word("năng lực", 9)[0])                 # Vietnamese word
         self.assertTrue(self.mgr.remove_word("viên chức", 9)[0])
         self.assertEqual(snapshot_en(self.en), en_before)                    # English untouched
-        self.assertEqual(self.mgr._active_game.to_json(), game_before)
+        self.assertEqual(self.mgr.game_for(CH).to_json(), game_before)
         self.assertIn("năng lực", self.vi.words.values())
         self.assertNotIn("viên chức", self.vi.words.values())
 
     def test_admin_edits_during_vietnamese_game(self):
         self.force_vi()
-        game_before = self.mgr._active_game.to_json()
+        game_before = self.mgr.game_for(CH).to_json()
         vi_before = snapshot_vi(self.vi)
         self.assertTrue(self.mgr.add_word("zyzzyva", 9)[0])                  # English word
         self.assertTrue(self.mgr.remove_word("tiger", 9)[0])
         self.assertEqual(snapshot_vi(self.vi), vi_before)                    # Vietnamese untouched
-        self.assertEqual(self.mgr._active_game.to_json(), game_before)
+        self.assertEqual(self.mgr.game_for(CH).to_json(), game_before)
         self.assertIn("zyzzyva", self.en)
         self.assertNotIn("tiger", self.en)
 
@@ -219,7 +220,7 @@ class CrossLanguageCase(unittest.TestCase):
         self.force_en()
         self.play("egg")
         self.mgr = self.new_manager()
-        g = self.mgr._active_game
+        g = self.mgr.game_for(CH)
         self.assertEqual((g.language, g.expected_start_key), ("en", "g"))
         self.assertEqual(self.play("goat", 2).status, PhraseStatus.OK)
         self.mgr.stop_game(CH)
@@ -227,7 +228,7 @@ class CrossLanguageCase(unittest.TestCase):
         self.force_vi()
         self.play("sinh viên")
         self.mgr = self.new_manager()
-        g = self.mgr._active_game
+        g = self.mgr.game_for(CH)
         self.assertEqual((g.language, g.expected_start_key), ("vi", syllable_key("viên")))
         self.assertEqual(self.play("viên chức", 2).status, PhraseStatus.OK)
 

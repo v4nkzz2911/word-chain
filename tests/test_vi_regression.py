@@ -14,7 +14,13 @@ from en_dictionary import EnglishDictionary  # noqa: E402
 from storage import GameStore  # noqa: E402
 from vi_dictionary import VietnameseDictionary  # noqa: E402
 from vi_text import parse_word, syllable_key  # noqa: E402
-from word_chain import PhraseStatus, SkipStatus, WordChainGameManager, WordChainState  # noqa: E402
+from word_chain import (  # noqa: E402
+    ChannelSession,
+    PhraseStatus,
+    SkipStatus,
+    WordChainGameManager,
+    WordChainState,
+)
 
 
 CH = 200
@@ -69,10 +75,7 @@ class ViBase(unittest.TestCase):
             expected_start_key=syllable_key(word),
             used=dict(used) if used is not None else {key(phrase): None},
         )
-        self.mgr._active_channel_id = CH
-        self.mgr._active_game = game
-        self.mgr._last_answer_at.clear()
-        self.mgr._skip_votes.clear()
+        self.mgr._sessions[CH] = ChannelSession(game)
         return game
 
     def play(self, text, user_id=1, name="Bob"):
@@ -92,7 +95,7 @@ class VietnameseRegressionEnUi(ViBase):
             "> **Rule:** exactly 2 syllables\n"
             "> **Cooldown per user:** `5s`",
         )
-        game = self.mgr._active_game
+        game = self.mgr.game_for(CH)
         self.assertEqual(game.used, {key("học sinh"): None})
         self.assertEqual(game.expected_start_key, syllable_key("sinh"))
 
@@ -202,14 +205,16 @@ class VietnameseRegressionEnUi(ViBase):
     def test_11_check_word(self):
         self.set_state()
         self.assertEqual(
-            self.mgr.check_word("sinh viên"),
+            self.mgr.check_word("sinh viên", channel_id=CH),
             (True, "✅ **sinh viên** is in the dictionary. **1** word(s) can follow it."),
         )
-        self.assertEqual(self.mgr.check_word("xyz abc"), (False, "❌ **xyz abc** is not in the dictionary."))
+        self.assertEqual(
+            self.mgr.check_word("xyz abc", channel_id=CH), (False, "❌ **xyz abc** is not in the dictionary.")
+        )
         # A single a-z token like "sinh" is now routed to the English check (by design), so the
         # unchanged Vietnamese shape message is checked with an accented single syllable.
         self.assertEqual(
-            self.mgr.check_word("học"),
+            self.mgr.check_word("học", channel_id=CH),
             (False, "❌ **A Vietnamese word must have exactly 2 syllables** (letters only)"),
         )
         self.assertEqual(
@@ -217,9 +222,9 @@ class VietnameseRegressionEnUi(ViBase):
             (False, "❌ **A Vietnamese word must have exactly 2 syllables** (letters only)"),
         )
         # 2-syllable words get the Vietnamese check even with no game or an English game.
-        self.mgr._active_game = None
+        self.mgr._sessions.pop(CH, None)
         self.assertEqual(
-            self.mgr.check_word("sinh viên"),
+            self.mgr.check_word("sinh viên", channel_id=CH),
             (True, "✅ **sinh viên** is in the dictionary. **1** word(s) can follow it."),
         )
 
@@ -251,8 +256,8 @@ class VietnameseRegressionEnUi(ViBase):
         }
         self.store.save_game(CH, json.dumps(state, ensure_ascii=False))
         mgr = self.manager()
-        self.assertEqual(mgr._active_game.expected_start_key, syllable_key("hòa"))
-        self.assertEqual(mgr._active_game.turns, 2)
+        self.assertEqual(mgr.game_for(CH).expected_start_key, syllable_key("hòa"))
+        self.assertEqual(mgr.game_for(CH).turns, 2)
         self.assertEqual(mgr.handle_player_phrase(CH, 1, "Bob", "hòa bình").status, PhraseStatus.WIN)
 
     def test_custom_words_vi_only(self):

@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from storage import SCHEMA_VERSION, GameStore  # noqa: E402
 from vi_text import syllable_key  # noqa: E402
-from word_chain import WordChainGameManager, WordChainState  # noqa: E402
+from word_chain import ChannelSession, WordChainGameManager, WordChainState  # noqa: E402
 
 from test_en_word_chain import CH, make_en, make_vi  # noqa: E402
 
@@ -83,7 +83,7 @@ class MigrationTests(unittest.TestCase):
         for store in (self.open_store(), GameStore(":memory:")):
             with self.subTest(store=store):
                 self.assertEqual(user_version(store.conn), SCHEMA_VERSION)
-                self.assertEqual(SCHEMA_VERSION, 1)
+                self.assertEqual(SCHEMA_VERSION, 2)
                 self.assertTrue({"players", "player_stats"} <= table_names(store.conn))
                 self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM players").fetchone()[0], 0)
                 self.assertEqual(store.conn.execute("SELECT COUNT(*) FROM player_stats").fetchone()[0], 0)
@@ -99,7 +99,7 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(store.rank_of(1, "vi"), 1)
         self.assertEqual(store.rank_of(2, "vi"), 2)
         self.assertIsNone(store.rank_of(1, "en"))
-        self.assertEqual(user_version(store.conn), 1)
+        self.assertEqual(user_version(store.conn), SCHEMA_VERSION)
 
     def test_reopen_does_not_copy_again(self):
         make_old_db(self.path)
@@ -262,8 +262,7 @@ class ManagerStatsEnUi(unittest.TestCase):
             state = WordChainState("apple", "e", "en", "e", {"apple": None})
         else:
             state = WordChainState("học sinh", "sinh", "vi", syllable_key("sinh"), {})
-        self.mgr._active_channel_id = CH
-        self.mgr._active_game = state
+        self.mgr._sessions[CH] = ChannelSession(state)
 
     def seed_bob(self) -> None:
         self.store.bump(1, "correct", "vi")
@@ -330,12 +329,12 @@ class ManagerStatsEnUi(unittest.TestCase):
 
     def test_leaderboard_default_language(self):
         self.seed_board()
-        self.assertTrue(self.mgr.leaderboard().startswith(self.t["board_title_vi"]))
+        self.assertTrue(self.mgr.leaderboard(channel_id=CH).startswith(self.t["board_title_vi"]))
         self.set_active("en")
-        self.assertEqual(self.mgr.leaderboard(), self.t["board_en"])
-        self.assertNotIn("<@3>", self.mgr.leaderboard())
+        self.assertEqual(self.mgr.leaderboard(channel_id=CH), self.t["board_en"])
+        self.assertNotIn("<@3>", self.mgr.leaderboard(channel_id=CH))
         self.set_active("vi")
-        board = self.mgr.leaderboard()
+        board = self.mgr.leaderboard(channel_id=CH)
         self.assertTrue(board.startswith(self.t["board_title_vi"]))
         self.assertIn("<@3>", board)
         self.assertNotIn("<@2>", board)
